@@ -1,50 +1,65 @@
-# Welcome to your Expo app 👋
+# UPSA Student Hub
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+Cross-platform Expo + TypeScript mobile app tailored for UPSA students.
 
-## Get started
+## Features Implemented
 
-1. Install dependencies
+- UPSA brand theme with `UPSA Blue (#003366)` and `UPSA Gold (#FFCC00)`
+- Bottom tabs: `Dashboard`, `My Slides`, `AI Tutor`, `Timetable`
+- Supabase Auth login with UPSA student email + index number
+- Slide listing from Supabase Storage with "Download for Offline Use"
+- Floating "Summarize with AI" action on slide screen
+- Groq integrations routed via Supabase Edge Functions
+  - Smart summary parser with expandable bullet points
+  - Quiz generation with mobile-friendly MCQ UI
+- Timetable widget showing current class, venue, and progress bar using local clock
+- Haptic feedback for quiz correctness
+- Offline mode with TanStack Query + AsyncStorage persistence
+- 15-minute lecture reminder notifications
+- Snapshot Note Taking (camera -> Groq Vision transcription -> local notes)
+- Light/Dark mode support for night study sessions
 
-   ```bash
-   npm install
-   ```
+## Stack
 
-2. Start the app
+- Expo Router + React Native + TypeScript
+- NativeWind (Tailwind for React Native)
+- Supabase (`auth`, `storage`, `functions`)
+- TanStack Query + offline persistence
+- Expo Notifications, Expo FileSystem, Expo Image Picker
 
-   ```bash
-   npx expo start
-   ```
+## Setup
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+1. Install dependencies:
 
 ```bash
-npm run reset-project
+pnpm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+2. Configure environment variables (copy from `.env.example`):
 
-## Learn more
+```bash
+cp .env.example .env
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+3. Start the app:
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```bash
+pnpm start
+```
 
-## Join the community
+## Supabase Edge Functions Expected
 
-Join our community of developers creating universal apps.
+Create these functions in your Supabase project:
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- `groq-bridge`
+  - `task: "summary"` -> returns `summary` JSON structure
+  - `task: "quiz"` -> returns `questions` array
+  - `task: "vision-transcribe"` -> returns `transcript`
+- `extract-slide-text`
+  - accepts slide `path` and returns extracted `text`
+
+## Storage and Tables Expected
+
+- Storage bucket: `slides` (PDF materials)
+- Table: `timetable_entries`
+  - `id`, `course`, `venue`, `lecturer`, `day_of_week`, `start_time`, `end_time`
