@@ -5,7 +5,7 @@ Cross-platform Expo + TypeScript mobile app tailored for UPSA students.
 ## Features Implemented
 
 - UPSA brand theme with `UPSA Blue (#003366)` and `UPSA Gold (#FFCC00)`
-- Bottom tabs: `Dashboard`, `My Slides`, `AI Tutor`, `Timetable`
+- Bottom tabs: `Home`, `My Slides`, `AI Tutor`, `Timetable`
 - Supabase Auth login with UPSA student email + index number
 - Slide listing from Supabase Storage with "Download for Offline Use"
 - Floating "Summarize with AI" action on slide screen
@@ -17,6 +17,7 @@ Cross-platform Expo + TypeScript mobile app tailored for UPSA students.
 - Offline mode with TanStack Query + AsyncStorage persistence
 - 15-minute lecture reminder notifications
 - Snapshot Note Taking (camera -> Groq Vision transcription -> local notes)
+- Dynamic Home and Timetable cards loaded from Supabase academic data views
 - Light/Dark mode support for night study sessions
 
 ## Stack
@@ -61,5 +62,16 @@ Create these functions in your Supabase project:
 ## Storage and Tables Expected
 
 - Storage bucket: `slides` (PDF materials)
-- Table: `timetable_entries`
-  - `id`, `course`, `venue`, `lecturer`, `day_of_week`, `start_time`, `end_time`
+- Run SQL script: `supabase/schema_and_seed.sql`
+- Core tables:
+  - `academic_years`
+  - `semesters`
+  - `courses`
+  - `class_sessions`
+  - `course_assessments`
+  - `course_announcements`
+- App query views:
+  - `v_class_schedule`
+  - `v_home_course_cards`
+
+`timetable_entries` is still supported as a fallback source for backward compatibility.

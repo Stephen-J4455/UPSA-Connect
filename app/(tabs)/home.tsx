@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,6 +28,7 @@ import {
   listSnapshotNotes,
   transcribeAndSaveSnapshot,
 } from "@/lib/snapshot";
+import { fetchHomeCourseCards } from "@/lib/academics";
 import { fetchTimetable, getCurrentClass } from "@/lib/timetable";
 import { useAuth } from "@/providers/auth-provider";
 
@@ -37,6 +39,25 @@ type OfflineSnapshotTask = {
   course: string;
   queuedAt: string;
 };
+
+const COURSE_PALETTE = [
+  "#1D4ED8",
+  "#0EA5E9",
+  "#10B981",
+  "#F59E0B",
+  "#8B5CF6",
+  "#EC4899",
+];
+
+function toCardTone(hexColor: string) {
+  const hex = hexColor.replace("#", "");
+  if (hex.length !== 6) return "rgba(0, 51, 102, 0.09)";
+
+  const red = parseInt(hex.slice(0, 2), 16);
+  const green = parseInt(hex.slice(2, 4), 16);
+  const blue = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${red}, ${green}, ${blue}, 0.15)`;
+}
 
 export default function HomeScreen() {
   const { user } = useAuth();
@@ -65,6 +86,11 @@ export default function HomeScreen() {
     queryFn: listSnapshotNotes,
   });
 
+  const { data: semesterCourses = [] } = useQuery({
+    queryKey: ["home-course-cards"],
+    queryFn: fetchHomeCourseCards,
+  });
+
   useEffect(() => {
     loadQueuedSnapshots().catch(() => {
       // Queue loading failures should not block the Home screen.
@@ -76,6 +102,50 @@ export default function HomeScreen() {
   const todayClassCount = timetable.filter(
     (entry) => entry.dayOfWeek === today,
   ).length;
+  const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  const nextSessionByCourse = useMemo(() => {
+    const now = new Date();
+
+    return timetable.reduce<
+      Record<
+        string,
+        {
+          startsAt: number;
+          dayLabel: string;
+          startTime: string;
+          isOnline: boolean;
+        }
+      >
+    >((acc, entry) => {
+      if (!entry.courseCode) return acc;
+
+      const [hour, minute] = entry.startTime.split(":").map(Number);
+      if (Number.isNaN(hour) || Number.isNaN(minute)) return acc;
+
+      const sessionDate = new Date(now);
+      const dayDelta = entry.dayOfWeek - now.getDay();
+      sessionDate.setDate(now.getDate() + dayDelta);
+      sessionDate.setHours(hour, minute, 0, 0);
+      if (sessionDate.getTime() <= now.getTime()) {
+        sessionDate.setDate(sessionDate.getDate() + 7);
+      }
+
+      const existing = acc[entry.courseCode];
+      const nextCandidate = {
+        startsAt: sessionDate.getTime(),
+        dayLabel: weekdayLabels[entry.dayOfWeek] ?? `Day ${entry.dayOfWeek}`,
+        startTime: entry.startTime,
+        isOnline: Boolean(entry.isOnline),
+      };
+
+      if (!existing || nextCandidate.startsAt < existing.startsAt) {
+        acc[entry.courseCode] = nextCandidate;
+      }
+
+      return acc;
+    }, {});
+  }, [timetable]);
 
   const displayName =
     user?.user_metadata?.full_name ??
@@ -225,6 +295,106 @@ export default function HomeScreen() {
           <Text style={[styles.statValue, { color: theme.tint }]}>{notes.length}</Text>
           <Text style={[styles.statCaption, { color: theme.textSubtle }]}>saved snapshots</Text>
         </View>
+      </View>
+
+      <View style={styles.sectionSpacing}>
+        <View style={[styles.spaceBetweenRow, { marginHorizontal: Spacing.lg }]}>
+          <Text style={[styles.sectionTitle, { color: theme.tint }]}>My Courses</Text>
+          <View style={[styles.courseCountPill, { backgroundColor: theme.surfaceMuted }]}> 
+            <Text style={[styles.courseCountText, { color: theme.tint }]}> 
+              {semesterCourses.length} courses
+            </Text>
+          </View>
+        </View>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={[styles.courseRail, { marginHorizontal: -Spacing.lg }]}
+          contentContainerStyle={[styles.courseRailContent, { paddingHorizontal: Spacing.lg }]}
+        >
+          {semesterCourses.map((courseCard) => {
+            const accent = courseCard.colorHex || COURSE_PALETTE[Number(courseCard.level) % COURSE_PALETTE.length] || theme.tint;
+            const nextSession = nextSessionByCourse[courseCard.courseCode];
+
+            return (
+              <View
+                key={courseCard.courseId}
+                style={[
+                  styles.courseCard,
+                  {
+                    borderColor: accent,
+                    backgroundColor: accent,
+                  },
+                ]}
+              >
+                <View style={[styles.courseAccentBar, { backgroundColor: "#ffffff", opacity: 0.3 }]} />
+
+                <View style={styles.spaceBetweenRow}>
+                  <Text style={[styles.courseBadge, { backgroundColor: "#ffffff", color: accent }]}> 
+                    {courseCard.courseCode}
+                  </Text>
+                  <Ionicons name="school-outline" size={20} color="#ffffff" />
+                </View>
+
+                <Text style={[styles.courseTitle, { color: "#ffffff" }]} numberOfLines={2}>
+                  {courseCard.courseTitle}
+                </Text>
+
+                <Text style={[styles.courseDepartment, { color: "#ffffff", opacity: 0.8 }]}>
+                  {courseCard.department} • Level {courseCard.level}
+                </Text>
+
+                <View style={styles.courseMetaRow}>
+                  <View style={[styles.courseChip, { backgroundColor: "rgba(255,255,255,0.2)" }]}> 
+                    <Text style={[styles.courseChipLabel, { color: "#ffffff" }]}>Credits</Text>
+                    <Text style={[styles.courseChipValue, { color: "#ffffff" }]}>{courseCard.credits}</Text>
+                  </View>
+                  <View style={[styles.courseChip, { backgroundColor: "rgba(255,255,255,0.2)" }]}> 
+                    <Text style={[styles.courseChipLabel, { color: "#ffffff" }]}>Weekly</Text>
+                    <Text style={[styles.courseChipValue, { color: "#ffffff" }]}>
+                      {courseCard.sessionsPerWeek}
+                    </Text>
+                  </View>
+                </View>
+
+                <Text style={[styles.courseMeta, { color: "#ffffff", opacity: 0.8 }]}>
+                  {courseCard.semesterName} • {courseCard.academicYearLabel}
+                </Text>
+                <Text style={[styles.courseMeta, { color: "#ffffff", opacity: 0.8 }]}>
+                  {courseCard.lecturerName || "Lecturer TBA"}
+                </Text>
+
+                <View style={[styles.courseNextClass, { borderTopColor: "rgba(255,255,255,0.3)" }]}> 
+                  <Ionicons
+                    name={nextSession?.isOnline ? "videocam-outline" : "time-outline"}
+                    size={14}
+                    color="#ffffff"
+                  />
+                  <Text style={[styles.courseMetaTiny, styles.courseNextClassText, { color: "#ffffff", opacity: 0.8 }]}> 
+                    {nextSession
+                      ? `Next: ${nextSession.dayLabel} ${nextSession.startTime}${nextSession.isOnline ? " (online)" : ""}`
+                      : `Class window: ${courseCard.firstClassTime || "--:--"} - ${courseCard.lastClassTime || "--:--"}`}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+          {!semesterCourses.length ? (
+            <View
+              style={[
+                styles.courseCard,
+                { borderColor: theme.border, backgroundColor: theme.surfaceMuted },
+              ]}
+            >
+              <Ionicons name="school-outline" size={32} color={theme.textMuted} style={{ alignSelf: 'center', marginBottom: Spacing.sm }} />
+              <Text style={[styles.courseTitle, { color: theme.text }]}>No courses yet</Text>
+              <Text style={[styles.courseMeta, { color: theme.textMuted }]}> 
+                Seed or sync your Supabase academic data to populate this section.
+              </Text>
+            </View>
+          ) : null}
+        </ScrollView>
       </View>
 
       <View
@@ -537,6 +707,10 @@ const styles = StyleSheet.create({
     fontSize: FontSize.xl,
     fontWeight: FontWeight.semibold,
   },
+  sectionTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.semibold,
+  },
   cardDescription: {
     marginTop: Spacing.xs,
     fontSize: FontSize.sm,
@@ -605,6 +779,115 @@ const styles = StyleSheet.create({
   },
   notesList: {
     marginTop: Spacing.md,
+  },
+  courseRail: {
+    marginTop: Spacing.md,
+  },
+  courseRailContent: {
+    paddingRight: Spacing.sm,
+    gap: Spacing.md,
+  },
+  courseSectionRoot: {
+    marginHorizontal: -Spacing.xs,
+  },
+  courseHeadingWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  expoMark: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+  },
+  courseCountPill: {
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    minWidth: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 5,
+  },
+  courseCountText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
+  courseCard: {
+    width: 285,
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    overflow: "hidden",
+  },
+  courseAccentBar: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    right: 0,
+    height: 5,
+    borderTopLeftRadius: Radius.lg,
+    borderTopRightRadius: Radius.lg,
+  },
+  courseBadge: {
+    borderRadius: Radius.pill,
+    overflow: "hidden",
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+  },
+  courseTitle: {
+    marginTop: Spacing.sm,
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+    lineHeight: 21,
+  },
+  courseDepartment: {
+    marginTop: 3,
+    fontSize: FontSize.sm,
+  },
+  courseMetaRow: {
+    marginTop: Spacing.sm,
+    flexDirection: "row",
+    gap: Spacing.sm,
+  },
+  courseChip: {
+    flex: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 7,
+  },
+  courseChipLabel: {
+    fontSize: 11,
+    textTransform: "uppercase",
+    fontWeight: FontWeight.semibold,
+  },
+  courseChipValue: {
+    marginTop: 2,
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+  },
+  courseMeta: {
+    marginTop: 5,
+    fontSize: FontSize.sm,
+  },
+  courseNextClass: {
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  courseNextClassText: {
+    marginTop: 0,
+    marginLeft: 6,
+    flex: 1,
+  },
+  courseMetaTiny: {
+    marginTop: 6,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
   noteCard: {
     borderRadius: Radius.md,

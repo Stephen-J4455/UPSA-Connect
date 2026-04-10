@@ -29,11 +29,34 @@ export type QuizQuestion = {
 export type TimetableEntry = {
   id: string;
   course: string;
+  courseCode?: string;
   venue: string;
   lecturer?: string;
   dayOfWeek: number;
   startTime: string;
   endTime: string;
+  classType?: string;
+  isOnline?: boolean;
+  campus?: string;
+  semesterName?: string;
+  academicYear?: string;
+  colorHex?: string;
+};
+
+export type HomeCourseCard = {
+  courseId: string;
+  courseCode: string;
+  courseTitle: string;
+  department: string;
+  level: number;
+  credits: number;
+  lecturerName?: string;
+  colorHex?: string;
+  semesterName: string;
+  academicYearLabel: string;
+  sessionsPerWeek: number;
+  firstClassTime?: string;
+  lastClassTime?: string;
 };
 
 export type GroqSummaryResponse = {

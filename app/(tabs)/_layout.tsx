@@ -32,7 +32,7 @@ export default function TabLayout() {
           bottom: 16,
           height: 62,
           borderTopWidth: 0,
-          borderRadius: Radius.pill,
+          borderRadius: Radius.xl,
           backgroundColor: theme.tint,
           shadowColor: theme.shadow,
           ...Shadows.card,

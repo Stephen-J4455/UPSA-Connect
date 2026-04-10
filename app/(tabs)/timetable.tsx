@@ -30,6 +30,9 @@ export default function TimetableScreen() {
     });
   }, [timetable]);
 
+  const semesterLabel = timetable[0]?.semesterName;
+  const academicYearLabel = timetable[0]?.academicYear;
+
   return (
     <View style={[styles.screen, { backgroundColor: theme.background }]}>
       <Text style={[styles.title, { color: theme.tint }]}> 
@@ -38,6 +41,12 @@ export default function TimetableScreen() {
       <Text style={[styles.subtitle, { color: theme.textMuted }]}> 
         Works offline with cached data from React Query + AsyncStorage.
       </Text>
+      {semesterLabel ? (
+        <Text style={[styles.pill, { color: theme.tint, borderColor: theme.borderStrong }]}> 
+          {semesterLabel}
+          {academicYearLabel ? ` | ${academicYearLabel}` : ""}
+        </Text>
+      ) : null}
 
       <FlatList
         style={styles.list}
@@ -51,17 +60,28 @@ export default function TimetableScreen() {
               { borderColor: theme.border, backgroundColor: theme.surface },
             ]}
           >
-            <Text style={[styles.courseText, { color: theme.text }]}> 
-              {item.course}
-            </Text>
+            <View style={styles.rowTop}>
+              <Text style={[styles.courseCode, { color: theme.tint, borderColor: theme.borderStrong }]}> 
+                {item.courseCode || "COURSE"}
+              </Text>
+              <Text style={[styles.classType, { color: theme.textSubtle }]}> 
+                {item.classType || "Class"}
+              </Text>
+            </View>
+            <Text style={[styles.courseText, { color: theme.text }]}>{item.course}</Text>
             <Text style={[styles.metaText, { color: theme.textMuted }]}> 
               {item.venue}
+              {item.campus ? ` | ${item.campus}` : ""}
             </Text>
             <Text style={[styles.metaText, { color: theme.textMuted }]}> 
               {item.startTime} - {item.endTime}
             </Text>
+            {item.lecturer ? (
+              <Text style={[styles.metaText, { color: theme.textMuted }]}>{item.lecturer}</Text>
+            ) : null}
             <Text style={[styles.dayText, { color: theme.textSubtle }]}> 
               Day {item.dayOfWeek}
+              {item.isOnline ? " | Online" : " | In-person"}
             </Text>
           </View>
         )}
@@ -103,8 +123,36 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
     fontSize: FontSize.sm,
   },
+  pill: {
+    marginTop: Spacing.sm,
+    alignSelf: "flex-start",
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 5,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
   list: {
     marginTop: Spacing.lg,
+  },
+  rowTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  courseCode: {
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    overflow: "hidden",
+  },
+  classType: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
   },
   itemCard: {
     borderWidth: 1,
