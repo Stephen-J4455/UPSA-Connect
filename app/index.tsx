@@ -3,11 +3,11 @@ import { Redirect } from "expo-router";
 import { useAuth } from "@/providers/auth-provider";
 
 export default function RootIndex() {
-  const { session, isLoading } = useAuth();
+  const { isLoading } = useAuth();
 
   if (isLoading) {
     return null;
   }
 
-  return <Redirect href={session ? "/(tabs)/home" : "/login"} />;
+  return <Redirect href="/login" />;
 }

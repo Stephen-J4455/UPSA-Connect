@@ -1,0 +1,4 @@
+project_id = "pkkffnpcgkwvnlwhtxwu"
+
+[functions.huggingface-bridge]
+verify_jwt = false

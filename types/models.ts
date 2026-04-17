@@ -2,9 +2,11 @@ export type SlideFile = {
   id: string;
   name: string;
   path: string;
+  folderName?: string;
   courseCode?: string;
   updatedAt?: string;
   localPath?: string;
+  source?: "local" | "remote";
 };
 
 export type SmartSummaryItem = {

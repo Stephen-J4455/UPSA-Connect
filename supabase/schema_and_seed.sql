@@ -3,6 +3,84 @@
 
 create extension if not exists pgcrypto;
 
+-- Alter existing table if needed
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_name = 'ai_conversation_messages' and column_name = 'thinking' and data_type = 'text') then
+    alter table public.ai_conversation_messages alter column thinking type jsonb using case when thinking is null then null else json_build_object('reasoning', thinking) end;
+  end if;
+end $$;
+
+create table if not exists public.ai_conversations (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  title text,
+  is_archived boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.ai_conversation_messages (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid not null references public.ai_conversations(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  role text not null check (role in ('user', 'assistant')),
+  content text not null,
+  model text,
+  thinking jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_ai_conversations_user_updated
+  on public.ai_conversations (user_id, updated_at desc);
+
+create index if not exists idx_ai_messages_conversation_created
+  on public.ai_conversation_messages (conversation_id, created_at asc);
+
+alter table public.ai_conversations enable row level security;
+alter table public.ai_conversation_messages enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_conversations' and policyname = 'read own ai_conversations'
+  ) then
+    create policy "read own ai_conversations" on public.ai_conversations
+      for select to authenticated
+      using (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_conversations' and policyname = 'write own ai_conversations'
+  ) then
+    create policy "write own ai_conversations" on public.ai_conversations
+      for all to authenticated
+      using (auth.uid() = user_id)
+      with check (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_conversation_messages' and policyname = 'read own ai_conversation_messages'
+  ) then
+    create policy "read own ai_conversation_messages" on public.ai_conversation_messages
+      for select to authenticated
+      using (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_conversation_messages' and policyname = 'write own ai_conversation_messages'
+  ) then
+    create policy "write own ai_conversation_messages" on public.ai_conversation_messages
+      for all to authenticated
+      using (auth.uid() = user_id)
+      with check (auth.uid() = user_id);
+  end if;
+end $$;
+
 create table if not exists public.academic_years (
   id uuid primary key default gen_random_uuid(),
   label text not null unique,
@@ -326,3 +404,430 @@ group by
   c.id, c.code, c.title, c.department, c.level, c.credits, c.lecturer_name, c.color_hex,
   s.name, ay.label
 order by c.code;
+
+create table if not exists public.student_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  department text not null,
+  program text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.app_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.department_catalog (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  code text unique,
+  school text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.program_catalog (
+  id uuid primary key default gen_random_uuid(),
+  department text not null,
+  program_name text not null,
+  program_code text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  description text,
+  created_at timestamptz not null default now(),
+  unique (program_code, class_name, year, semester)
+);
+
+create table if not exists public.class_catalog (
+  id uuid primary key default gen_random_uuid(),
+  department text not null,
+  program_name text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  created_at timestamptz not null default now(),
+  unique (department, program_name, class_name, year, semester)
+);
+
+create table if not exists public.course_catalog (
+  id uuid primary key default gen_random_uuid(),
+  department text not null,
+  program_name text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  course_code text not null,
+  course_title text not null,
+  credits int not null default 3,
+  created_at timestamptz not null default now(),
+  unique (course_code, class_name, year, semester)
+);
+
+create table if not exists public.learning_materials (
+  id uuid primary key default gen_random_uuid(),
+  department text not null,
+  program_name text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  material_type text not null check (material_type in ('slide', 'note', 'image')),
+  title text not null,
+  file_path text not null,
+  file_url text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.campus_posts (
+  id uuid primary key default gen_random_uuid(),
+  department text not null,
+  program_name text not null,
+  class_name text not null,
+  year int not null check (year between 1 and 8),
+  semester int not null check (semester between 1 and 3),
+  title text not null,
+  body text not null,
+  image_path text,
+  image_url text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.ai_models (
+  id uuid primary key default gen_random_uuid(),
+  provider text not null default 'huggingface',
+  model_id text not null,
+  label text,
+  is_active boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (provider, model_id)
+);
+
+alter table public.student_profiles enable row level security;
+alter table public.app_admins enable row level security;
+alter table public.department_catalog enable row level security;
+alter table public.program_catalog enable row level security;
+alter table public.class_catalog enable row level security;
+alter table public.course_catalog enable row level security;
+alter table public.learning_materials enable row level security;
+alter table public.campus_posts enable row level security;
+alter table public.ai_models enable row level security;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'student_profiles' and policyname = 'select own student profile'
+  ) then
+    create policy "select own student profile" on public.student_profiles
+      for select to authenticated
+      using (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'student_profiles' and policyname = 'upsert own student profile'
+  ) then
+    create policy "upsert own student profile" on public.student_profiles
+      for insert to authenticated
+      with check (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'student_profiles' and policyname = 'update own student profile'
+  ) then
+    create policy "update own student profile" on public.student_profiles
+      for update to authenticated
+      using (auth.uid() = user_id)
+      with check (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'app_admins' and policyname = 'read own admin membership'
+  ) then
+    create policy "read own admin membership" on public.app_admins
+      for select to authenticated
+      using (auth.uid() = user_id);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'department_catalog' and policyname = 'read department catalog'
+  ) then
+    create policy "read department catalog" on public.department_catalog
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'department_catalog' and policyname = 'write department catalog'
+  ) then
+    create policy "write department catalog" on public.department_catalog
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'program_catalog' and policyname = 'read program catalog'
+  ) then
+    create policy "read program catalog" on public.program_catalog
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'program_catalog' and policyname = 'write program catalog'
+  ) then
+    create policy "write program catalog" on public.program_catalog
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'class_catalog' and policyname = 'read class catalog'
+  ) then
+    create policy "read class catalog" on public.class_catalog
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'class_catalog' and policyname = 'write class catalog'
+  ) then
+    create policy "write class catalog" on public.class_catalog
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'course_catalog' and policyname = 'read course catalog'
+  ) then
+    create policy "read course catalog" on public.course_catalog
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'course_catalog' and policyname = 'write course catalog'
+  ) then
+    create policy "write course catalog" on public.course_catalog
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'learning_materials' and policyname = 'read learning materials'
+  ) then
+    create policy "read learning materials" on public.learning_materials
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'learning_materials' and policyname = 'write learning materials'
+  ) then
+    create policy "write learning materials" on public.learning_materials
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'campus_posts' and policyname = 'read campus posts'
+  ) then
+    create policy "read campus posts" on public.campus_posts
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'campus_posts' and policyname = 'write campus posts'
+  ) then
+    create policy "write campus posts" on public.campus_posts
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_models' and policyname = 'read ai models'
+  ) then
+    create policy "read ai models" on public.ai_models
+      for select to anon, authenticated
+      using (true);
+  end if;
+
+  if not exists (
+    select 1 from pg_policies
+    where schemaname = 'public' and tablename = 'ai_models' and policyname = 'write ai models'
+  ) then
+    create policy "write ai models" on public.ai_models
+      for all to authenticated
+      using (true)
+      with check (true);
+  end if;
+end $$;
+
+insert into public.department_catalog (name, code, school)
+values
+  ('Accounting', 'ACC', 'School of Business'),
+  ('Marketing', 'MKT', 'School of Business'),
+  ('Information Technology', 'IT', 'School of Technology'),
+  ('Economics', 'ECO', 'School of Graduate Studies'),
+  ('Law', 'LAW', 'School of Law')
+on conflict (name) do nothing;
+
+insert into public.app_admins (user_id, email)
+select id, email
+from auth.users
+where lower(email) like 'stevejupiter%'
+order by created_at asc
+limit 1
+on conflict (user_id) do update set email = excluded.email;
+
+insert into public.ai_models (provider, model_id, label, is_active)
+values
+  ('huggingface', 'meta-llama/Llama-3.1-8B-Instruct', 'Llama 3.1 8B Instruct', true)
+on conflict (provider, model_id)
+do update set
+  label = excluded.label,
+  updated_at = now();
+
+insert into storage.buckets (id, name, public)
+values ('course-materials', 'course-materials', true)
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name, public)
+values ('news-media', 'news-media', true)
+on conflict (id) do nothing;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'public read course materials'
+  ) then
+    create policy "public read course materials"
+      on storage.objects for select
+      to anon, authenticated
+      using (bucket_id = 'course-materials');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated write course materials'
+  ) then
+    create policy "authenticated write course materials"
+      on storage.objects for insert
+      to authenticated
+      with check (bucket_id = 'course-materials');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated update course materials'
+  ) then
+    create policy "authenticated update course materials"
+      on storage.objects for update
+      to authenticated
+      using (bucket_id = 'course-materials')
+      with check (bucket_id = 'course-materials');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated delete course materials'
+  ) then
+    create policy "authenticated delete course materials"
+      on storage.objects for delete
+      to authenticated
+      using (bucket_id = 'course-materials');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'public read news media'
+  ) then
+    create policy "public read news media"
+      on storage.objects for select
+      to anon, authenticated
+      using (bucket_id = 'news-media');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated write news media'
+  ) then
+    create policy "authenticated write news media"
+      on storage.objects for insert
+      to authenticated
+      with check (bucket_id = 'news-media');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated update news media'
+  ) then
+    create policy "authenticated update news media"
+      on storage.objects for update
+      to authenticated
+      using (bucket_id = 'news-media')
+      with check (bucket_id = 'news-media');
+  end if;
+
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'storage'
+      and tablename = 'objects'
+      and policyname = 'authenticated delete news media'
+  ) then
+    create policy "authenticated delete news media"
+      on storage.objects for delete
+      to authenticated
+      using (bucket_id = 'news-media');
+  end if;
+end $$;

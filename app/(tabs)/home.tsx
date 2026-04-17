@@ -1,20 +1,28 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { router } from "expo-router";
+import { useMemo, type ComponentProps } from "react";
 import {
-  Alert,
-  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   useColorScheme,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import {
+  fetchCampusScopeCounts,
+  fetchScopedCampusPosts,
+  fetchScopedCourses,
+} from "@/lib/catalog";
+import {
+  getResolvedStudentProfile,
+  isProfileComplete,
+} from "@/lib/student-profile";
+import { fetchTimetable, getCurrentClass, getNextClass } from "@/lib/timetable";
+import { useAuth } from "@/providers/auth-provider";
 import {
   Colors,
   FontSize,
@@ -23,41 +31,42 @@ import {
   Shadows,
   Spacing,
 } from "@/constants/theme";
-import {
-  captureSnapshot,
-  listSnapshotNotes,
-  transcribeAndSaveSnapshot,
-} from "@/lib/snapshot";
-import { fetchHomeCourseCards } from "@/lib/academics";
-import { fetchTimetable, getCurrentClass } from "@/lib/timetable";
-import { useAuth } from "@/providers/auth-provider";
 
-const OFFLINE_SNAPSHOT_QUEUE_KEY = "offline_snapshot_queue_v1";
-
-type OfflineSnapshotTask = {
-  uri: string;
-  course: string;
-  queuedAt: string;
+type QuickAction = {
+  label: string;
+  subtitle: string;
+  icon: ComponentProps<typeof Ionicons>["name"];
+  route: string;
 };
 
-const COURSE_PALETTE = [
-  "#1D4ED8",
-  "#0EA5E9",
-  "#10B981",
-  "#F59E0B",
-  "#8B5CF6",
-  "#EC4899",
+const QUICK_ACTIONS: QuickAction[] = [
+  {
+    label: "Timetable",
+    subtitle: "Class schedule",
+    icon: "calendar-outline",
+    route: "/(tabs)/timetable",
+  },
+  {
+    label: "My Slides",
+    subtitle: "Course materials",
+    icon: "document-text-outline",
+    route: "/(tabs)/my-slides",
+  },
+  {
+    label: "AI Tutor",
+    subtitle: "Study support",
+    icon: "sparkles-outline",
+    route: "/(tabs)/ai-tutor",
+  },
+  {
+    label: "Onboarding",
+    subtitle: "Update profile",
+    icon: "settings-outline",
+    route: "/onboarding",
+  },
 ];
 
-function toCardTone(hexColor: string) {
-  const hex = hexColor.replace("#", "");
-  if (hex.length !== 6) return "rgba(0, 51, 102, 0.09)";
-
-  const red = parseInt(hex.slice(0, 2), 16);
-  const green = parseInt(hex.slice(2, 4), 16);
-  const blue = parseInt(hex.slice(4, 6), 16);
-  return `rgba(${red}, ${green}, ${blue}, 0.15)`;
-}
+const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export default function HomeScreen() {
   const { user } = useAuth();
@@ -65,86 +74,70 @@ export default function HomeScreen() {
   const mode = useColorScheme() === "dark" ? "dark" : "light";
   const theme = Colors[mode];
 
-  const [course, setCourse] = useState("Principles of Marketing");
-  const [queuedSnapshots, setQueuedSnapshots] = useState<OfflineSnapshotTask[]>([]);
-  const [isSyncingQueue, setIsSyncingQueue] = useState(false);
+  const { data: profile } = useQuery({
+    queryKey: ["student-profile", user?.id],
+    enabled: Boolean(user?.id),
+    queryFn: async () => {
+      if (!user) return null;
+      return getResolvedStudentProfile(user.id);
+    },
+  });
 
-  const {
-    data: timetable = [],
-    dataUpdatedAt: timetableUpdatedAt,
-  } = useQuery({
+  const normalizedProfile = profile === undefined ? null : profile;
+  const profileComplete = isProfileComplete(normalizedProfile);
+
+  const { data: timetable = [] } = useQuery({
     queryKey: ["timetable"],
     queryFn: fetchTimetable,
   });
 
-  const {
-    data: notes = [],
-    refetch: refetchNotes,
-    dataUpdatedAt: notesUpdatedAt,
-  } = useQuery({
-    queryKey: ["snapshot-notes"],
-    queryFn: listSnapshotNotes,
+  const { data: scopedCourses = [] } = useQuery({
+    queryKey: [
+      "scoped-courses",
+      profile?.department,
+      profile?.program,
+      profile?.className,
+      profile?.year,
+      profile?.semester,
+    ],
+    enabled: profileComplete,
+    queryFn: async () => fetchScopedCourses(normalizedProfile),
   });
 
-  const { data: semesterCourses = [] } = useQuery({
-    queryKey: ["home-course-cards"],
-    queryFn: fetchHomeCourseCards,
+  const { data: scopeCounts = { courses: 0, materials: 0, announcements: 0 } } = useQuery({
+    queryKey: [
+      "scope-counts",
+      profile?.department,
+      profile?.program,
+      profile?.className,
+      profile?.year,
+      profile?.semester,
+    ],
+    enabled: profileComplete,
+    queryFn: async () => fetchCampusScopeCounts(normalizedProfile),
   });
 
-  useEffect(() => {
-    loadQueuedSnapshots().catch(() => {
-      // Queue loading failures should not block the Home screen.
-    });
-  }, []);
+  const { data: scopedPosts = [] } = useQuery({
+    queryKey: [
+      "scoped-posts",
+      profile?.department,
+      profile?.program,
+      profile?.className,
+      profile?.year,
+      profile?.semester,
+    ],
+    enabled: profileComplete,
+    queryFn: async () => fetchScopedCampusPosts(normalizedProfile),
+  });
 
   const currentClass = useMemo(() => getCurrentClass(timetable), [timetable]);
-  const today = new Date().getDay();
-  const todayClassCount = timetable.filter(
-    (entry) => entry.dayOfWeek === today,
-  ).length;
-  const weekdayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const nextClass = useMemo(() => getNextClass(timetable), [timetable]);
 
-  const nextSessionByCourse = useMemo(() => {
-    const now = new Date();
-
-    return timetable.reduce<
-      Record<
-        string,
-        {
-          startsAt: number;
-          dayLabel: string;
-          startTime: string;
-          isOnline: boolean;
-        }
-      >
-    >((acc, entry) => {
-      if (!entry.courseCode) return acc;
-
-      const [hour, minute] = entry.startTime.split(":").map(Number);
-      if (Number.isNaN(hour) || Number.isNaN(minute)) return acc;
-
-      const sessionDate = new Date(now);
-      const dayDelta = entry.dayOfWeek - now.getDay();
-      sessionDate.setDate(now.getDate() + dayDelta);
-      sessionDate.setHours(hour, minute, 0, 0);
-      if (sessionDate.getTime() <= now.getTime()) {
-        sessionDate.setDate(sessionDate.getDate() + 7);
-      }
-
-      const existing = acc[entry.courseCode];
-      const nextCandidate = {
-        startsAt: sessionDate.getTime(),
-        dayLabel: weekdayLabels[entry.dayOfWeek] ?? `Day ${entry.dayOfWeek}`,
-        startTime: entry.startTime,
-        isOnline: Boolean(entry.isOnline),
-      };
-
-      if (!existing || nextCandidate.startsAt < existing.startsAt) {
-        acc[entry.courseCode] = nextCandidate;
-      }
-
-      return acc;
-    }, {});
+  const todayClasses = useMemo(() => {
+    const currentDay = new Date().getDay();
+    return timetable
+      .filter((entry) => entry.dayOfWeek === currentDay)
+      .sort((a, b) => a.startTime.localeCompare(b.startTime));
   }, [timetable]);
 
   const displayName =
@@ -152,347 +145,149 @@ export default function HomeScreen() {
     user?.user_metadata?.name ??
     user?.email?.split("@")[0] ??
     "UPSA Student";
-  const initials = displayName
-    .split(/\s+/)
-    .filter((part: string) => Boolean(part))
-    .slice(0, 2)
-    .map((part: string) => part[0]?.toUpperCase() ?? "")
-    .join("");
+
   const firstName = displayName.split(/\s+/)[0] ?? "Student";
 
-  const lastSyncedAt = Math.max(timetableUpdatedAt, notesUpdatedAt);
-  const lastSyncedText =
-    lastSyncedAt > 0
-      ? new Date(lastSyncedAt).toLocaleString()
-      : "No synced data yet";
-
-  async function loadQueuedSnapshots() {
-    const raw = await AsyncStorage.getItem(OFFLINE_SNAPSHOT_QUEUE_KEY);
-    if (!raw) {
-      setQueuedSnapshots([]);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(raw) as OfflineSnapshotTask[];
-      if (Array.isArray(parsed)) {
-        setQueuedSnapshots(parsed);
-      } else {
-        setQueuedSnapshots([]);
-      }
-    } catch {
-      setQueuedSnapshots([]);
-    }
-  }
-
-  async function persistQueue(nextQueue: OfflineSnapshotTask[]) {
-    setQueuedSnapshots(nextQueue);
-    await AsyncStorage.setItem(
-      OFFLINE_SNAPSHOT_QUEUE_KEY,
-      JSON.stringify(nextQueue),
-    );
-  }
-
-  async function queueSnapshotForLater(uri: string, courseName: string) {
-    const nextQueue = [
-      ...queuedSnapshots,
-      {
-        uri,
-        course: courseName,
-        queuedAt: new Date().toISOString(),
-      },
-    ];
-    await persistQueue(nextQueue);
-  }
-
-  async function syncQueuedSnapshots() {
-    if (!queuedSnapshots.length) {
-      Alert.alert("Offline Queue", "No queued snapshots to sync.");
-      return;
-    }
-
-    setIsSyncingQueue(true);
-    let successCount = 0;
-    const failed: OfflineSnapshotTask[] = [];
-
-    for (const task of queuedSnapshots) {
-      try {
-        await transcribeAndSaveSnapshot(task.uri, task.course);
-        successCount += 1;
-      } catch {
-        failed.push(task);
-      }
-    }
-
-    await persistQueue(failed);
-    if (successCount > 0) {
-      await refetchNotes();
-    }
-    setIsSyncingQueue(false);
-
-    if (failed.length) {
-      Alert.alert(
-        "Partial sync",
-        `${successCount} synced, ${failed.length} still queued for later.`,
-      );
-      return;
-    }
-
-    Alert.alert("Offline Queue", `Synced ${successCount} queued snapshots.`);
-  }
+  const nextClassText = nextClass
+    ? `${WEEKDAY_LABELS[nextClass.entry.dayOfWeek] ?? "Day"} ${nextClass.entry.startTime} - ${nextClass.entry.endTime}`
+    : "No upcoming lecture found";
 
   return (
     <ScrollView
       style={[styles.screen, { backgroundColor: theme.background }]}
       contentContainerStyle={styles.contentContainer}
+      showsVerticalScrollIndicator={false}
+      bounces={false}
+      alwaysBounceVertical={false}
+      overScrollMode="never"
     >
       <View
         style={[
           styles.hero,
           {
             backgroundColor: theme.heroBackground,
-            paddingTop: Math.max(insets.top + 8, 24),
-            shadowColor: theme.shadow,
+            borderColor: theme.borderStrong,
+            paddingTop: insets.top + Spacing.md,
           },
         ]}
       >
-        <View style={[styles.heroOrbTop, { backgroundColor: theme.heroOrbOne }]} />
-        <View style={[styles.heroOrbBottom, { backgroundColor: theme.heroOrbTwo }]} />
-        <Text style={[styles.welcomeText, { color: theme.icon }]}>Welcome Back</Text>
-        <Text style={[styles.heroTitle, { color: theme.textOnHero }]}>{firstName}</Text>
-        <View style={styles.profileRow}>
-          <View style={[styles.initialsBadge, { backgroundColor: theme.accent }]}>
-            <Text style={[styles.initialsText, { color: theme.accentText }]}>
-              {initials || "US"}
-            </Text>
-          </View>
-          <View style={styles.profileMeta}>
-            <Text style={[styles.profileName, { color: theme.textOnHero }]}>
-              {displayName}
-            </Text>
-            <Text style={[styles.profileEmail, { color: theme.textMuted }]}>
-              {user?.email ?? "No email available"}
-            </Text>
-          </View>
-        </View>
-      </View>
+        <View style={[styles.heroOrbOne, { backgroundColor: theme.heroOrbOne }]} />
+        <View style={[styles.heroOrbTwo, { backgroundColor: theme.heroOrbTwo }]} />
 
-      <View style={[styles.statsRow, styles.sectionSpacing]}>
-        <View style={[styles.statCard, { backgroundColor: theme.surface }]}>
-          <View style={styles.inlineRow}>
-            <Ionicons name="calendar-outline" size={16} color={theme.icon} />
-            <Text style={[styles.statLabel, { color: theme.textSubtle }]}>Today</Text>
-          </View>
-          <Text style={[styles.statValue, { color: theme.tint }]}>{todayClassCount}</Text>
-          <Text style={[styles.statCaption, { color: theme.textSubtle }]}>scheduled classes</Text>
-        </View>
-
-        <View style={[styles.statCard, { backgroundColor: theme.surface }]}>
-          <View style={styles.inlineRow}>
-            <Ionicons name="document-text-outline" size={16} color={theme.icon} />
-            <Text style={[styles.statLabel, { color: theme.textSubtle }]}>Notes</Text>
-          </View>
-          <Text style={[styles.statValue, { color: theme.tint }]}>{notes.length}</Text>
-          <Text style={[styles.statCaption, { color: theme.textSubtle }]}>saved snapshots</Text>
-        </View>
-      </View>
-
-      <View style={styles.sectionSpacing}>
-        <View style={[styles.spaceBetweenRow, { marginHorizontal: Spacing.lg }]}>
-          <Text style={[styles.sectionTitle, { color: theme.tint }]}>My Courses</Text>
-          <View style={[styles.courseCountPill, { backgroundColor: theme.surfaceMuted }]}> 
-            <Text style={[styles.courseCountText, { color: theme.tint }]}> 
-              {semesterCourses.length} courses
-            </Text>
-          </View>
-        </View>
-
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={[styles.courseRail, { marginHorizontal: -Spacing.lg }]}
-          contentContainerStyle={[styles.courseRailContent, { paddingHorizontal: Spacing.lg }]}
-        >
-          {semesterCourses.map((courseCard) => {
-            const accent = courseCard.colorHex || COURSE_PALETTE[Number(courseCard.level) % COURSE_PALETTE.length] || theme.tint;
-            const nextSession = nextSessionByCourse[courseCard.courseCode];
-
-            return (
-              <View
-                key={courseCard.courseId}
-                style={[
-                  styles.courseCard,
-                  {
-                    borderColor: accent,
-                    backgroundColor: accent,
-                  },
-                ]}
-              >
-                <View style={[styles.courseAccentBar, { backgroundColor: "#ffffff", opacity: 0.3 }]} />
-
-                <View style={styles.spaceBetweenRow}>
-                  <Text style={[styles.courseBadge, { backgroundColor: "#ffffff", color: accent }]}> 
-                    {courseCard.courseCode}
-                  </Text>
-                  <Ionicons name="school-outline" size={20} color="#ffffff" />
-                </View>
-
-                <Text style={[styles.courseTitle, { color: "#ffffff" }]} numberOfLines={2}>
-                  {courseCard.courseTitle}
-                </Text>
-
-                <Text style={[styles.courseDepartment, { color: "#ffffff", opacity: 0.8 }]}>
-                  {courseCard.department} • Level {courseCard.level}
-                </Text>
-
-                <View style={styles.courseMetaRow}>
-                  <View style={[styles.courseChip, { backgroundColor: "rgba(255,255,255,0.2)" }]}> 
-                    <Text style={[styles.courseChipLabel, { color: "#ffffff" }]}>Credits</Text>
-                    <Text style={[styles.courseChipValue, { color: "#ffffff" }]}>{courseCard.credits}</Text>
-                  </View>
-                  <View style={[styles.courseChip, { backgroundColor: "rgba(255,255,255,0.2)" }]}> 
-                    <Text style={[styles.courseChipLabel, { color: "#ffffff" }]}>Weekly</Text>
-                    <Text style={[styles.courseChipValue, { color: "#ffffff" }]}>
-                      {courseCard.sessionsPerWeek}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={[styles.courseMeta, { color: "#ffffff", opacity: 0.8 }]}>
-                  {courseCard.semesterName} • {courseCard.academicYearLabel}
-                </Text>
-                <Text style={[styles.courseMeta, { color: "#ffffff", opacity: 0.8 }]}>
-                  {courseCard.lecturerName || "Lecturer TBA"}
-                </Text>
-
-                <View style={[styles.courseNextClass, { borderTopColor: "rgba(255,255,255,0.3)" }]}> 
-                  <Ionicons
-                    name={nextSession?.isOnline ? "videocam-outline" : "time-outline"}
-                    size={14}
-                    color="#ffffff"
-                  />
-                  <Text style={[styles.courseMetaTiny, styles.courseNextClassText, { color: "#ffffff", opacity: 0.8 }]}> 
-                    {nextSession
-                      ? `Next: ${nextSession.dayLabel} ${nextSession.startTime}${nextSession.isOnline ? " (online)" : ""}`
-                      : `Class window: ${courseCard.firstClassTime || "--:--"} - ${courseCard.lastClassTime || "--:--"}`}
-                  </Text>
-                </View>
-              </View>
-            );
-          })}
-          {!semesterCourses.length ? (
-            <View
-              style={[
-                styles.courseCard,
-                { borderColor: theme.border, backgroundColor: theme.surfaceMuted },
-              ]}
-            >
-              <Ionicons name="school-outline" size={32} color={theme.textMuted} style={{ alignSelf: 'center', marginBottom: Spacing.sm }} />
-              <Text style={[styles.courseTitle, { color: theme.text }]}>No courses yet</Text>
-              <Text style={[styles.courseMeta, { color: theme.textMuted }]}> 
-                Seed or sync your Supabase academic data to populate this section.
-              </Text>
-            </View>
-          ) : null}
-        </ScrollView>
-      </View>
-
-      <View
-        style={[
-          styles.card,
-          styles.sectionSpacing,
-          { backgroundColor: theme.surface, borderColor: theme.border },
-        ]}
-      >
-        <View style={styles.spaceBetweenRow}>
-          <Text style={[styles.cardTitle, { color: theme.tint }]}>Offline Ready</Text>
-          <View style={[styles.statusPill, { backgroundColor: theme.statusIdleBg }]}> 
-            <Text style={[styles.statusText, { color: theme.statusIdleText }]}>CACHE</Text>
-          </View>
-        </View>
-
-        <Text style={[styles.cardDescription, { color: theme.textMuted }]}> 
-          Last synced: {lastSyncedText}
-        </Text>
-        <Text style={[styles.cardDescription, { color: theme.textMuted }]}> 
-          Queued snapshots: {queuedSnapshots.length}
+        <Text style={[styles.heroEyebrow, { color: theme.textOnHero }]}>UPSA Connect</Text>
+        <Text style={[styles.heroTitle, { color: theme.textOnHero }]}>Hello, {firstName}</Text>
+        <Text style={[styles.heroSubtitle, { color: theme.textMuted }]}> 
+          {profileComplete
+            ? `${profile?.department} | ${profile?.program}`
+            : "Complete onboarding to personalize your campus workspace."}
         </Text>
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.captureButton,
-            { backgroundColor: pressed ? theme.tintPressed : theme.tint },
-          ]}
-          onPress={syncQueuedSnapshots}
-          disabled={isSyncingQueue}
-        >
-          <Text style={[styles.captureButtonText, { color: theme.accent }]}> 
-            {isSyncingQueue ? "Syncing..." : "Sync Offline Queue"}
+        <View style={[styles.heroStatusRow, { borderColor: theme.borderStrong }]}> 
+          <Ionicons
+            name={currentClass ? "radio-outline" : "time-outline"}
+            size={16}
+            color={theme.accent}
+          />
+          <Text style={[styles.heroStatusText, { color: theme.textOnHero }]}> 
+            {currentClass
+              ? `Live now: ${currentClass.course} at ${currentClass.venue}`
+              : `Next class: ${nextClassText}`}
           </Text>
-        </Pressable>
-      </View>
-
-      <View
-        style={[
-          styles.card,
-          styles.sectionSpacing,
-          { backgroundColor: theme.surface, borderColor: theme.border },
-        ]}
-      >
-        <View style={styles.spaceBetweenRow}>
-          <Text style={[styles.cardTitle, { color: theme.tint }]}>Class Status</Text>
-          <View
-            style={[
-              styles.statusPill,
-              {
-                backgroundColor: currentClass
-                  ? theme.statusLiveBg
-                  : theme.statusIdleBg,
-              },
-            ]}
-          >
-            <Text
-              style={[
-                styles.statusText,
-                {
-                  color: currentClass
-                    ? theme.statusLiveText
-                    : theme.statusIdleText,
-                },
-              ]}
-            >
-              {currentClass ? "LIVE" : "IDLE"}
-            </Text>
-          </View>
         </View>
 
         {currentClass ? (
-          <View style={styles.classBody}>
-            <Text style={[styles.classTitle, { color: theme.text }]}> 
-              {currentClass.course}
-            </Text>
-            <Text style={[styles.classMeta, { color: theme.textMuted }]}> 
-              Venue: {currentClass.venue}
-            </Text>
-            <View style={[styles.progressTrack, { backgroundColor: theme.border }]}> 
+          <View style={styles.heroProgressWrap}>
+            <View
+              style={[
+                styles.heroProgressTrack,
+                {
+                  backgroundColor: "rgba(255, 255, 255, 0.16)",
+                  borderColor: "rgba(255, 255, 255, 0.18)",
+                },
+              ]}
+            >
               <View
                 style={[
-                  styles.progressFill,
+                  styles.heroProgressFill,
                   {
-                    width: `${Math.max(currentClass.progress * 100, 3)}%`,
                     backgroundColor: theme.accent,
+                    width: `${Math.max(currentClass.progress * 100, 3)}%`,
                   },
                 ]}
               />
             </View>
-            <Text style={[styles.progressText, { color: theme.accent }]}> 
-              {currentClass.remainingMinutes} mins remaining
+            <Text style={[styles.heroProgressText, { color: theme.textOnHero }]}>
+              {currentClass.remainingMinutes} min left
             </Text>
           </View>
+        ) : null}
+      </View>
+
+      <View style={[styles.quickActionsGrid, styles.sectionSpacing]}>
+        {QUICK_ACTIONS.map((action) => (
+          <Pressable
+            key={action.label}
+            android_ripple={{ color: theme.ring, borderless: false }}
+            style={({ pressed }) => [
+              styles.quickActionCard,
+              {
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                transform: [{ scale: pressed ? 0.985 : 1 }],
+              },
+            ]}
+            onPress={() => {
+              router.push(action.route as never);
+            }}
+          >
+            <View style={[styles.quickActionIcon, { backgroundColor: theme.surfaceMuted }]}> 
+              <Ionicons name={action.icon} size={20} color={theme.tint} />
+            </View>
+            <Text style={[styles.quickActionTitle, { color: theme.text }]}>{action.label}</Text>
+            <Text style={[styles.quickActionSubtitle, { color: theme.textSubtle }]}> 
+              {action.subtitle}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          styles.sectionSpacing,
+          { borderColor: theme.border, backgroundColor: theme.surface },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: theme.tint }]}>Academic Profile</Text>
+
+        {profileComplete ? (
+          <View style={styles.profileGrid}>
+            <ProfilePill label="Department" value={profile?.department ?? "-"} theme={theme} />
+            <ProfilePill label="Program" value={profile?.program ?? "-"} theme={theme} />
+            <ProfilePill label="Class" value={profile?.className ?? "-"} theme={theme} />
+            <ProfilePill
+              label="Year / Sem"
+              value={`Y${profile?.year} S${profile?.semester}`}
+              theme={theme}
+            />
+          </View>
         ) : (
-          <Text style={[styles.idleText, { color: theme.textMuted }]}> 
-            No lecture in session now. Your next class will appear here automatically.
-          </Text>
+          <View style={styles.emptyWrap}>
+            <Text style={[styles.emptyText, { color: theme.textMuted }]}> 
+              Your profile is incomplete. Finish onboarding to unlock personalized content.
+            </Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.inlineButton,
+                { backgroundColor: pressed ? theme.ctaPressed : theme.cta },
+              ]}
+              onPress={() => {
+                router.push("/onboarding");
+              }}
+            >
+              <Text style={[styles.inlineButtonText, { color: theme.ctaText }]}>Complete Onboarding</Text>
+            </Pressable>
+          </View>
         )}
       </View>
 
@@ -500,98 +295,185 @@ export default function HomeScreen() {
         style={[
           styles.card,
           styles.sectionSpacing,
-          { backgroundColor: theme.surface, borderColor: theme.border },
+          { borderColor: theme.border, backgroundColor: theme.surface },
         ]}
       >
-        <Text style={[styles.cardTitle, { color: theme.tint }]}>Snapshot Studio</Text>
-        <Text style={[styles.cardDescription, { color: theme.textMuted }]}> 
-          Capture now. If you are offline, the snapshot is queued and auto-syncs later.
+        <Text style={[styles.cardTitle, { color: theme.tint }]}>Today at UPSA</Text>
+        <Text style={[styles.cardSubtitle, { color: theme.textSubtle }]}> 
+          {todayClasses.length
+            ? `${todayClasses.length} classes scheduled today`
+            : "No scheduled class for today."}
         </Text>
 
-        <TextInput
-          style={[
-            styles.input,
-            {
-              borderColor: theme.borderStrong,
-              backgroundColor: theme.surfaceMuted,
-              color: theme.text,
-            },
-          ]}
-          value={course}
-          onChangeText={setCourse}
-          placeholder="Course name"
-          placeholderTextColor={theme.textSubtle}
-        />
+        <View style={styles.todayList}>
+          {todayClasses.slice(0, 4).map((entry) => (
+            <View
+              key={entry.id}
+              style={[
+                styles.todayItem,
+                { borderColor: theme.border, backgroundColor: theme.surfaceMuted },
+              ]}
+            >
+              <View style={styles.todayTimeWrap}>
+                <Text style={[styles.todayTime, { color: theme.tint }]}>{entry.startTime}</Text>
+                <Text style={[styles.todayTimeTo, { color: theme.textSubtle }]}>{entry.endTime}</Text>
+              </View>
+              <View style={styles.todayMetaWrap}>
+                <Text style={[styles.todayCourse, { color: theme.text }]} numberOfLines={1}>
+                  {entry.course}
+                </Text>
+                <Text style={[styles.todayVenue, { color: theme.textMuted }]} numberOfLines={1}>
+                  {entry.venue}
+                </Text>
+              </View>
+            </View>
+          ))}
 
-        <Pressable
-          style={({ pressed }) => [
-            styles.captureButton,
-            { backgroundColor: pressed ? theme.tintPressed : theme.tint },
-          ]}
-          onPress={async () => {
-            try {
-              const uri = await captureSnapshot();
-              if (!uri) return;
-
-              try {
-                await transcribeAndSaveSnapshot(uri, course.trim() || "General Course");
-                await refetchNotes();
-                Alert.alert("Saved", "Snapshot note has been transcribed and saved.");
-              } catch {
-                await queueSnapshotForLater(uri, course.trim() || "General Course");
-                Alert.alert(
-                  "Saved Offline",
-                  "No connection detected. Snapshot was queued and will sync later.",
-                );
-              }
-            } catch (error) {
-              Alert.alert(
-                "Snapshot Error",
-                error instanceof Error
-                  ? error.message
-                  : "Could not process snapshot.",
-              );
-            }
-          }}
-        >
-          <Text style={[styles.captureButtonText, { color: theme.accent }]}>Capture and Save</Text>
-        </Pressable>
+          {!todayClasses.length ? (
+            <Text style={[styles.emptyText, { color: theme.textMuted }]}>Use the timetable tab to view your full week.</Text>
+          ) : null}
+        </View>
       </View>
 
       <View
         style={[
           styles.card,
           styles.sectionSpacing,
-          { backgroundColor: theme.surface, borderColor: theme.border },
+          { borderColor: theme.border, backgroundColor: theme.surface },
         ]}
       >
-        <Text style={[styles.cardTitle, { color: theme.tint }]}>Latest Snapshot Notes</Text>
-        <View style={styles.notesList}>
-          {notes.slice(0, 3).map((note) => (
+        <Text style={[styles.cardTitle, { color: theme.tint }]}>Semester Workspace</Text>
+
+        <View style={styles.metricsRow}>
+          <MetricBadge
+            label="Courses"
+            value={String(scopeCounts.courses || scopedCourses.length)}
+            theme={theme}
+          />
+          <MetricBadge label="Materials" value={String(scopeCounts.materials)} theme={theme} />
+          <MetricBadge
+            label="Notices"
+            value={String(scopeCounts.announcements || scopedPosts.length)}
+            theme={theme}
+          />
+        </View>
+
+        <View style={styles.courseList}>
+          {scopedCourses.slice(0, 5).map((courseItem) => (
             <View
-              key={note.id}
+              key={courseItem.id}
               style={[
-                styles.noteCard,
-                {
-                  borderColor: theme.border,
-                  backgroundColor: theme.surfaceMuted,
-                },
+                styles.courseItem,
+                { borderColor: theme.border, backgroundColor: theme.surfaceMuted },
               ]}
             >
-              <Text style={[styles.noteCourse, { color: theme.textSubtle }]}> 
-                {note.course}
+              <Text style={[styles.courseCode, { color: theme.tint }]}>{courseItem.courseCode}</Text>
+              <View style={styles.courseBody}>
+                <Text style={[styles.courseName, { color: theme.text }]} numberOfLines={1}>
+                  {courseItem.courseTitle}
+                </Text>
+                <Text style={[styles.courseCredit, { color: theme.textSubtle }]}> 
+                  {courseItem.credits} credits
+                </Text>
+              </View>
+            </View>
+          ))}
+
+          {!scopedCourses.length ? (
+            <Text style={[styles.emptyText, { color: theme.textMuted }]}> 
+              No scoped courses yet. Admin can add courses from the admin dashboard.
+            </Text>
+          ) : null}
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.card,
+          styles.sectionSpacing,
+          styles.lastSection,
+          { borderColor: theme.border, backgroundColor: theme.surface },
+        ]}
+      >
+        <Text style={[styles.cardTitle, { color: theme.tint }]}>Announcements</Text>
+
+        <View style={styles.postList}>
+          {scopedPosts.slice(0, 4).map((post) => (
+            <View
+              key={post.id}
+              style={[
+                styles.postItem,
+                { borderColor: theme.border, backgroundColor: theme.surfaceMuted },
+              ]}
+            >
+              <Text style={[styles.postTitle, { color: theme.text }]} numberOfLines={1}>
+                {post.title}
               </Text>
-              <Text style={[styles.noteText, { color: theme.text }]}> 
-                {note.text}
+              <Text style={[styles.postBody, { color: theme.textMuted }]} numberOfLines={2}>
+                {post.body}
+              </Text>
+              <Text style={[styles.postDate, { color: theme.textSubtle }]}> 
+                {post.createdAt
+                  ? new Date(post.createdAt).toLocaleDateString()
+                  : "Recent"}
               </Text>
             </View>
           ))}
-          {!notes.length ? (
-            <Text style={[styles.emptyState, { color: theme.textMuted }]}>No notes yet.</Text>
+
+          {!scopedPosts.length ? (
+            <Text style={[styles.emptyText, { color: theme.textMuted }]}> 
+              No announcements for your stream yet.
+            </Text>
           ) : null}
         </View>
       </View>
     </ScrollView>
+  );
+}
+
+function ProfilePill({
+  label,
+  value,
+  theme,
+}: {
+  label: string;
+  value: string;
+  theme: (typeof Colors)["light"] | (typeof Colors)["dark"];
+}) {
+  return (
+    <View
+      style={[
+        styles.profilePill,
+        { backgroundColor: theme.surfaceMuted, borderColor: theme.border },
+      ]}
+    >
+      <Text style={[styles.profilePillLabel, { color: theme.textSubtle }]}>{label}</Text>
+      <Text style={[styles.profilePillValue, { color: theme.text }]} numberOfLines={2}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function MetricBadge({
+  label,
+  value,
+  theme,
+}: {
+  label: string;
+  value: string;
+  theme: (typeof Colors)["light"] | (typeof Colors)["dark"];
+}) {
+  return (
+    <View
+      style={[
+        styles.metricBadge,
+        { backgroundColor: theme.surfaceMuted, borderColor: theme.border },
+      ]}
+    >
+      <Text style={[styles.metricValue, { color: theme.tint }]}>{value}</Text>
+      <Text style={[styles.metricLabel, { color: theme.textSubtle }]}>{label}</Text>
+    </View>
   );
 }
 
@@ -606,306 +488,281 @@ const styles = StyleSheet.create({
   sectionSpacing: {
     marginTop: Spacing.lg,
   },
+  lastSection: {
+    marginBottom: Spacing.xl,
+  },
   hero: {
     marginHorizontal: -Spacing.lg,
-    overflow: "hidden",
+    borderWidth: 0,
     borderBottomLeftRadius: Radius.xxl,
     borderBottomRightRadius: Radius.xxl,
     paddingHorizontal: Spacing.xl,
-    paddingBottom: Spacing.xxl,
-    ...Shadows.card,
+    paddingBottom: Spacing.xl,
+    overflow: "hidden",
   },
-  heroOrbTop: {
+  heroOrbOne: {
     position: "absolute",
-    right: -20,
-    top: -20,
-    width: 112,
-    height: 112,
-    borderRadius: 56,
+    width: 130,
+    height: 130,
+    borderRadius: 99,
+    right: -36,
+    top: -30,
+    opacity: 0.35,
   },
-  heroOrbBottom: {
+  heroOrbTwo: {
     position: "absolute",
-    left: -32,
-    bottom: -32,
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 120,
+    height: 120,
+    borderRadius: 99,
+    left: -40,
+    bottom: -46,
+    opacity: 0.26,
   },
-  welcomeText: {
+  heroEyebrow: {
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
+    letterSpacing: 1.8,
     textTransform: "uppercase",
-    letterSpacing: 2,
   },
   heroTitle: {
     marginTop: Spacing.sm,
-    fontSize: FontSize.xxl,
+    fontSize: FontSize.xxxl,
     fontWeight: FontWeight.bold,
   },
-  profileRow: {
-    marginTop: Spacing.lg,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  initialsBadge: {
-    width: 56,
-    height: 56,
-    borderRadius: Radius.pill,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  initialsText: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.extrabold,
-  },
-  profileMeta: {
-    flex: 1,
-    marginLeft: Spacing.md,
-  },
-  profileName: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-  },
-  profileEmail: {
-    marginTop: 2,
+  heroSubtitle: {
+    marginTop: Spacing.sm,
     fontSize: FontSize.sm,
+    lineHeight: 20,
   },
-  statsRow: {
+  heroStatusRow: {
+    marginTop: Spacing.md,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     flexDirection: "row",
+    alignItems: "center",
     gap: Spacing.sm,
   },
-  statCard: {
+  heroStatusText: {
     flex: 1,
-    borderRadius: Radius.lg,
-    padding: Spacing.lg,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
+    lineHeight: 20,
   },
-  inlineRow: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  statLabel: {
-    marginLeft: Spacing.sm,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  statValue: {
+  heroProgressWrap: {
     marginTop: Spacing.sm,
-    fontSize: FontSize.xxl,
-    fontWeight: FontWeight.bold,
   },
-  statCaption: {
-    fontSize: FontSize.xs,
-  },
-  card: {
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    padding: Spacing.lg,
-  },
-  cardTitle: {
-    fontSize: FontSize.xl,
-    fontWeight: FontWeight.semibold,
-  },
-  sectionTitle: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.semibold,
-  },
-  cardDescription: {
-    marginTop: Spacing.xs,
-    fontSize: FontSize.sm,
-  },
-  spaceBetweenRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  statusPill: {
-    borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-  },
-  statusText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-  },
-  classBody: {
-    marginTop: Spacing.md,
-  },
-  classTitle: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.semibold,
-  },
-  classMeta: {
-    marginTop: Spacing.xs,
-    fontSize: FontSize.sm,
-  },
-  progressTrack: {
-    marginTop: Spacing.md,
+  heroProgressTrack: {
     height: 8,
     borderRadius: Radius.pill,
     overflow: "hidden",
+    borderWidth: 1,
   },
-  progressFill: {
-    height: 8,
+  heroProgressFill: {
+    height: "100%",
     borderRadius: Radius.pill,
   },
-  progressText: {
-    marginTop: Spacing.sm,
+  heroProgressText: {
+    marginTop: Spacing.xs,
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
+    opacity: 0.9,
   },
-  idleText: {
-    marginTop: Spacing.md,
-    fontSize: FontSize.sm,
+  quickActionsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
   },
-  input: {
-    marginTop: Spacing.md,
-    borderRadius: Radius.md,
+  quickActionCard: {
+    width: "48.4%",
     borderWidth: 1,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    minHeight: 120,
+    shadowColor: "#000",
+    ...Shadows.card,
+  },
+  quickActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  quickActionTitle: {
+    marginTop: Spacing.sm,
+    fontSize: FontSize.md,
+    fontWeight: FontWeight.bold,
+  },
+  quickActionSubtitle: {
+    marginTop: 2,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+  },
+  card: {
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    shadowColor: "#000",
+    ...Shadows.card,
+  },
+  cardTitle: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+  },
+  cardSubtitle: {
+    marginTop: Spacing.xs,
     fontSize: FontSize.sm,
   },
-  captureButton: {
+  profileGrid: {
+    marginTop: Spacing.md,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+  },
+  profilePill: {
+    width: "48.5%",
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.sm,
+  },
+  profilePillLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    opacity: 0.8,
+  },
+  profilePillValue: {
+    marginTop: 2,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.bold,
+  },
+  emptyWrap: {
+    marginTop: Spacing.md,
+  },
+  emptyText: {
+    fontSize: FontSize.sm,
+    lineHeight: 20,
+  },
+  inlineButton: {
     marginTop: Spacing.md,
     alignSelf: "flex-start",
     borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.sm,
   },
-  captureButtonText: {
+  inlineButtonText: {
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
-  notesList: {
+  todayList: {
     marginTop: Spacing.md,
-  },
-  courseRail: {
-    marginTop: Spacing.md,
-  },
-  courseRailContent: {
-    paddingRight: Spacing.sm,
-    gap: Spacing.md,
-  },
-  courseSectionRoot: {
-    marginHorizontal: -Spacing.xs,
-  },
-  courseHeadingWrap: {
-    flexDirection: "row",
-    alignItems: "center",
     gap: Spacing.sm,
   },
-  expoMark: {
-    width: 24,
-    height: 24,
-    borderRadius: 8,
-  },
-  courseCountPill: {
+  todayItem: {
     borderWidth: 1,
-    borderRadius: Radius.pill,
-    minWidth: 36,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    flexDirection: "row",
+    gap: Spacing.sm,
     alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 5,
   },
-  courseCountText: {
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
+  todayTimeWrap: {
+    width: 74,
   },
-  courseCard: {
-    width: 285,
-    borderWidth: 1,
-    borderRadius: Radius.lg,
-    padding: Spacing.md,
-    overflow: "hidden",
-  },
-  courseAccentBar: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    right: 0,
-    height: 5,
-    borderTopLeftRadius: Radius.lg,
-    borderTopRightRadius: Radius.lg,
-  },
-  courseBadge: {
-    borderRadius: Radius.pill,
-    overflow: "hidden",
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 4,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.bold,
-  },
-  courseTitle: {
-    marginTop: Spacing.sm,
+  todayTime: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
-    lineHeight: 21,
   },
-  courseDepartment: {
-    marginTop: 3,
-    fontSize: FontSize.sm,
+  todayTimeTo: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
   },
-  courseMetaRow: {
-    marginTop: Spacing.sm,
-    flexDirection: "row",
-    gap: Spacing.sm,
-  },
-  courseChip: {
+  todayMetaWrap: {
     flex: 1,
-    borderRadius: Radius.md,
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: 7,
   },
-  courseChipLabel: {
-    fontSize: 11,
-    textTransform: "uppercase",
+  todayCourse: {
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
-  courseChipValue: {
+  todayVenue: {
     marginTop: 2,
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
+    fontSize: FontSize.xs,
   },
-  courseMeta: {
-    marginTop: 5,
-    fontSize: FontSize.sm,
-  },
-  courseNextClass: {
-    marginTop: Spacing.sm,
-    paddingTop: Spacing.sm,
-    borderTopWidth: 1,
+  metricsRow: {
+    marginTop: Spacing.md,
     flexDirection: "row",
+    gap: Spacing.sm,
+  },
+  metricBadge: {
+    flex: 1,
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.sm,
     alignItems: "center",
   },
-  courseNextClassText: {
-    marginTop: 0,
-    marginLeft: 6,
+  metricValue: {
+    fontSize: FontSize.lg,
+    fontWeight: FontWeight.bold,
+  },
+  metricLabel: {
+    marginTop: 2,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
+  },
+  courseList: {
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  courseItem: {
+    borderWidth: 1,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
+    flexDirection: "row",
+    gap: Spacing.sm,
+    alignItems: "center",
+  },
+  courseCode: {
+    width: 78,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+  },
+  courseBody: {
     flex: 1,
   },
-  courseMetaTiny: {
-    marginTop: 6,
-    fontSize: FontSize.xs,
+  courseName: {
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
-  noteCard: {
-    borderRadius: Radius.md,
+  courseCredit: {
+    marginTop: 2,
+    fontSize: FontSize.xs,
+  },
+  postList: {
+    marginTop: Spacing.md,
+    gap: Spacing.sm,
+  },
+  postItem: {
     borderWidth: 1,
-    padding: Spacing.md,
-    marginBottom: Spacing.sm,
+    borderRadius: Radius.md,
+    padding: Spacing.sm,
   },
-  noteCourse: {
+  postTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  postBody: {
+    marginTop: 4,
+    fontSize: FontSize.sm,
+    lineHeight: 19,
+  },
+  postDate: {
+    marginTop: Spacing.xs,
     fontSize: FontSize.xs,
     fontWeight: FontWeight.semibold,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  noteText: {
-    marginTop: Spacing.xs,
-    fontSize: FontSize.sm,
-  },
-  emptyState: {
-    fontSize: FontSize.sm,
   },
 });
