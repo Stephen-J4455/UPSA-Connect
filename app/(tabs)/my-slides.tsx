@@ -1,11 +1,12 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DocumentPicker from "expo-document-picker";
 import { router } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Dimensions,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -19,7 +20,6 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { SmartSummaryCard } from "@/components/ui/smart-summary";
 import {
   Colors,
   FontSize,
@@ -28,7 +28,6 @@ import {
   Shadows,
   Spacing,
 } from "@/constants/theme";
-import { summarizeTextWithGroq } from "@/lib/groq";
 import {
   addLocalSlide,
   createSlideFolder,
@@ -36,7 +35,6 @@ import {
   downloadSlideForOffline,
   fetchSlideFolders,
   fetchSlides,
-  getSlideExtractText,
   getSlideLocalUri,
   openSlideInDeviceViewer,
 } from "@/lib/slides";
@@ -86,6 +84,8 @@ export default function SlidesScreen() {
   const [folderMenuOpen, setFolderMenuOpen] = useState(false);
   const [createFolderModalVisible, setCreateFolderModalVisible] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
+  const [activeSlideMenu, setActiveSlideMenu] = useState<SlideFile | null>(null);
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
 
   const { data: slides = [], isLoading } = useQuery({
     queryKey: ["slides"],
@@ -96,23 +96,6 @@ export default function SlidesScreen() {
     queryKey: ["slide-folders"],
     queryFn: fetchSlideFolders,
   });
-
-  const summaryMutation = useMutation({
-    mutationFn: async (slide: SlideFile) => {
-      if (slide.source === "local") {
-        throw new Error("AI summary currently supports cloud slides only.");
-      }
-
-      const extractedText = await getSlideExtractText(slide.path);
-      if (!extractedText.trim()) {
-        throw new Error("No extractable text found for this slide.");
-      }
-
-      return summarizeTextWithGroq(extractedText);
-    },
-  });
-
-  const selectedSummary = useMemo(() => summaryMutation.data ?? null, [summaryMutation.data]);
 
   const offlineCount = useMemo(
     () => slides.filter((slide) => Boolean(slide.localPath)).length,
@@ -258,6 +241,44 @@ export default function SlidesScreen() {
         },
       },
     ]);
+  };
+
+  const openSlideInAITutor = async (slide: SlideFile, handoffPrompt: string) => {
+    try {
+      const slideUri = await getSlideLocalUri(slide);
+      router.push({
+        pathname: "/(tabs)/ai-tutor",
+        params: {
+          handoffId: String(Date.now()),
+          slidePath: slide.path,
+          slideName: slide.name,
+          slideSource: slide.source,
+          slideUri,
+          handoffPrompt,
+        },
+      });
+    } catch (error) {
+      Alert.alert(
+        "AI handoff failed",
+        error instanceof Error ? error.message : "Unable to prepare this file for AI.",
+      );
+    }
+  };
+
+  const handleSyncSlide = async (slide: SlideFile) => {
+    try {
+      await downloadSlideForOffline(slide);
+      await queryClient.invalidateQueries({ queryKey: ["slides"] });
+
+      if (slide.source === "local") {
+        Alert.alert("Synced", `${slide.name} is stored locally and ready.`);
+        return;
+      }
+
+      Alert.alert("Synced", `${slide.name} is now available offline.`);
+    } catch (error) {
+      Alert.alert("Sync failed", error instanceof Error ? error.message : "Unable to sync this file.");
+    }
   };
 
   return (
@@ -446,6 +467,155 @@ export default function SlidesScreen() {
           </View>
         </Modal>
 
+        <Modal
+          transparent
+          visible={Boolean(activeSlideMenu && menuPosition)}
+          animationType="none"
+          onRequestClose={() => {
+            setActiveSlideMenu(null);
+            setMenuPosition(null);
+          }}
+        >
+          <View style={styles.actionSheetBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => {
+              setActiveSlideMenu(null);
+              setMenuPosition(null);
+            }} />
+
+            {menuPosition ? (
+              (() => {
+                const { width: windowWidth, height: windowHeight } = Dimensions.get("window");
+                const popoverWidth = 340;
+                let left = menuPosition.x - popoverWidth / 2;
+                if (left + popoverWidth > windowWidth - 16) left = windowWidth - popoverWidth - 16;
+                if (left < 16) left = 16;
+                const top = menuPosition.y > windowHeight / 2 ? menuPosition.y - 240 : menuPosition.y + 12;
+
+                return (
+                  <View style={[styles.popoverContainer, { left, top }]}>
+                    <View
+                      style={[
+                        styles.popoverCard,
+                        {
+                          borderColor: theme.border,
+                          backgroundColor: theme.surface,
+                          shadowColor: theme.shadow,
+                          ...Shadows.card,
+                        },
+                      ]}
+                    >
+                      <View style={[styles.popoverHeader, { borderBottomColor: theme.border }]}>
+                        <Text style={[styles.popoverTitle, { color: theme.text }]} numberOfLines={1}>
+                          {activeSlideMenu?.name ?? "Actions"}
+                        </Text>
+                        <Pressable
+                          onPress={() => {
+                            setActiveSlideMenu(null);
+                            setMenuPosition(null);
+                          }}
+                          style={({ pressed }) => [
+                            styles.popoverCloseBtn,
+                            {
+                              backgroundColor: pressed ? theme.surfaceMuted : "transparent",
+                              borderColor: theme.border,
+                            },
+                          ]}
+                        >
+                          <Ionicons name="close" size={16} color={theme.textSubtle} />
+                        </Pressable>
+                      </View>
+
+                      <View style={styles.popoverGrid}>
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.popoverGridItem,
+                            { backgroundColor: pressed ? theme.surfaceMuted : theme.surfaceElevated },
+                          ]}
+                          onPress={() => {
+                            const target = activeSlideMenu;
+                            setActiveSlideMenu(null);
+                            setMenuPosition(null);
+                            if (!target) return;
+                            void openSlideInAITutor(
+                              target,
+                              `Summarize this file for UPSA revision. Give a concise overview, key concepts, and exam-focused study points.`,
+                            );
+                          }}
+                        >
+                          <View style={[styles.popoverIconBox, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                            <Ionicons name="sparkles-outline" size={24} color={theme.tint} />
+                          </View>
+                          <Text style={[styles.popoverGridLabel, { color: theme.text }]}>Summarize</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.popoverGridItem,
+                            { backgroundColor: pressed ? theme.surfaceMuted : theme.surfaceElevated },
+                          ]}
+                          onPress={() => {
+                            const target = activeSlideMenu;
+                            setActiveSlideMenu(null);
+                            setMenuPosition(null);
+                            if (!target) return;
+                            void handleSyncSlide(target);
+                          }}
+                        >
+                          <View style={[styles.popoverIconBox, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                            <Ionicons name="sync-outline" size={24} color={theme.tint} />
+                          </View>
+                          <Text style={[styles.popoverGridLabel, { color: theme.text }]}>Sync</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.popoverGridItem,
+                            { backgroundColor: pressed ? theme.surfaceMuted : theme.surfaceElevated },
+                          ]}
+                          onPress={() => {
+                            const target = activeSlideMenu;
+                            setActiveSlideMenu(null);
+                            setMenuPosition(null);
+                            if (!target) return;
+                            void openSlideInAITutor(
+                              target,
+                              `Use this file to solve likely exam questions step by step. Show methods, reasoning, and final answers in a clear study format.`,
+                            );
+                          }}
+                        >
+                          <View style={[styles.popoverIconBox, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+                            <Ionicons name="bulb-outline" size={24} color={theme.tint} />
+                          </View>
+                          <Text style={[styles.popoverGridLabel, { color: theme.text }]}>Solve</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.popoverGridItem,
+                            { backgroundColor: pressed ? "rgba(239, 68, 68, 0.12)" : theme.surfaceElevated },
+                          ]}
+                          onPress={() => {
+                            const target = activeSlideMenu;
+                            setActiveSlideMenu(null);
+                            setMenuPosition(null);
+                            if (!target) return;
+                            handleDeleteSlide(target);
+                          }}
+                        >
+                          <View style={[styles.popoverIconBox, { backgroundColor: "transparent", borderColor: theme.danger }]}>
+                            <Ionicons name="trash-outline" size={24} color={theme.danger} />
+                          </View>
+                          <Text style={[styles.popoverGridLabel, { color: theme.danger }]}>Delete</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })()
+            ) : null}
+          </View>
+        </Modal>
+
         {isLoading ? <ActivityIndicator style={styles.loader} size="large" color={theme.tint} /> : null}
 
         {!isLoading && groupedSlides.length === 0 ? (
@@ -507,71 +677,100 @@ export default function SlidesScreen() {
                         styles.slideCard,
                         {
                           borderColor: theme.border,
-                          backgroundColor: theme.surfaceMuted,
+                          backgroundColor: theme.surfaceElevated,
+                          shadowColor: theme.shadow,
+                          ...Shadows.card,
                         },
                       ]}
                     >
-                      <View style={styles.slideHeader}>
+                      <View style={styles.slideHeaderRow}>
+                        <View
+                          style={[
+                            styles.slideFileTypeIcon,
+                            {
+                              borderColor: theme.border,
+                              backgroundColor: theme.surface,
+                            },
+                          ]}
+                        >
+                          <Ionicons
+                            name={slide.name.toLowerCase().endsWith(".pdf") ? "document-text-outline" : "document-outline"}
+                            size={18}
+                            color={theme.tint}
+                          />
+                        </View>
+
                         <View style={styles.slideTextWrap}>
-                          <Text style={[styles.slideTitle, { color: theme.text }]} numberOfLines={1}>{slide.name}</Text>
-                          <Text style={[styles.slideStatus, { color: theme.textSubtle }]}>
-                            {slide.localPath ? "Available offline" : slide.source === "local" ? "Local import" : "Online only"}
+                          <Text style={[styles.slideTitle, { color: theme.text }]} numberOfLines={2}>
+                            {slide.name}
                           </Text>
-                        </View>
 
-                        <View style={styles.iconActionRow}>
-                          <Pressable
-                            style={({ pressed }) => [
-                              styles.iconButton,
-                              {
-                                borderColor: theme.tint,
-                                backgroundColor: pressed ? theme.surface : "transparent",
-                              },
-                            ]}
-                            onPress={async () => {
-                              try {
-                                const slideUri = await getSlideLocalUri(slide);
-                                router.push({
-                                  pathname: "/(tabs)/ai-tutor",
-                                  params: {
-                                    handoffId: String(Date.now()),
-                                    slidePath: slide.path,
-                                    slideName: slide.name,
-                                    slideSource: slide.source,
-                                    slideUri,
+                          <View style={styles.slideMetaRow}>
+                            <View
+                              style={[
+                                styles.slideBadge,
+                                {
+                                  borderColor: theme.border,
+                                  backgroundColor: theme.surface,
+                                },
+                              ]}
+                            >
+                              <Ionicons
+                                name={slide.localPath ? "cloud-done-outline" : slide.source === "local" ? "phone-portrait-outline" : "cloud-outline"}
+                                size={12}
+                                color={theme.tint}
+                              />
+                              <Text style={[styles.slideBadgeText, { color: theme.textSubtle }]}>
+                                {slide.localPath
+                                  ? "Offline ready"
+                                  : slide.source === "local"
+                                    ? "Local import"
+                                    : "Cloud only"}
+                              </Text>
+                            </View>
+
+                            {slide.courseCode ? (
+                              <View
+                                style={[
+                                  styles.slideBadge,
+                                  {
+                                    borderColor: theme.border,
+                                    backgroundColor: theme.surface,
                                   },
-                                });
-                              } catch (error) {
-                                Alert.alert(
-                                  "AI handoff failed",
-                                  error instanceof Error
-                                    ? error.message
-                                    : "Unable to prepare this file for AI.",
-                                );
-                              }
-                            }}
-                          >
-                            <Ionicons name="sparkles-outline" size={16} color={theme.tint} />
-                          </Pressable>
-
-                          <Pressable
-                            style={({ pressed }) => [
-                              styles.iconButton,
-                              {
-                                borderColor: theme.danger,
-                                backgroundColor: pressed ? theme.surface : "transparent",
-                              },
-                            ]}
-                            onPress={() => handleDeleteSlide(slide)}
-                          >
-                            <Ionicons name="trash-outline" size={16} color={theme.danger} />
-                          </Pressable>
+                                ]}
+                              >
+                                <Text style={[styles.slideBadgeCodeText, { color: theme.tint }]}>{slide.courseCode}</Text>
+                              </View>
+                            ) : null}
+                          </View>
                         </View>
+
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.slideMenuButton,
+                            {
+                              borderColor: theme.border,
+                              backgroundColor: pressed ? theme.surfaceMuted : theme.surface,
+                            },
+                          ]}
+                          onPress={(event) => {
+                            setMenuPosition({
+                              x: event.nativeEvent.pageX,
+                              y: event.nativeEvent.pageY,
+                            });
+                            setActiveSlideMenu(slide);
+                          }}
+                        >
+                          <Ionicons name="ellipsis-vertical" size={18} color={theme.textSubtle} />
+                        </Pressable>
                       </View>
 
                       <View style={styles.actionsRow}>
                         <Pressable
-                          style={({ pressed }) => [styles.primaryButton, { backgroundColor: pressed ? theme.tintPressed : theme.tint }]}
+                          style={({ pressed }) => [
+                            styles.primaryButton,
+                            { backgroundColor: pressed ? theme.tintPressed : theme.tint },
+                          ]}
                           onPress={async () => {
                             try {
                               await openSlideInDeviceViewer(slide);
@@ -580,7 +779,8 @@ export default function SlidesScreen() {
                             }
                           }}
                         >
-                          <Text style={[styles.primaryButtonText, { color: theme.accent }]}>Open in Viewer</Text>
+                          <Ionicons name="open-outline" size={16} color={theme.accent} />
+                          <Text style={[styles.primaryButtonText, { color: theme.accent }]}>Open</Text>
                         </Pressable>
 
                         <Pressable
@@ -589,43 +789,34 @@ export default function SlidesScreen() {
                             {
                               borderColor: theme.tint,
                               backgroundColor: pressed ? theme.surface : "transparent",
-                              opacity: summaryMutation.isPending ? 0.65 : 1,
                             },
                           ]}
-                          disabled={summaryMutation.isPending}
                           onPress={async () => {
                             try {
-                              await summaryMutation.mutateAsync(slide);
+                              const slideUri = await getSlideLocalUri(slide);
+                              router.push({
+                                pathname: "/(tabs)/ai-tutor",
+                                params: {
+                                  handoffId: String(Date.now()),
+                                  slidePath: slide.path,
+                                  slideName: slide.name,
+                                  slideSource: slide.source,
+                                  slideUri,
+                                },
+                              });
                             } catch (error) {
-                              Alert.alert("Summary error", error instanceof Error ? error.message : "Failed to summarize.");
+                              Alert.alert(
+                                "AI handoff failed",
+                                error instanceof Error
+                                  ? error.message
+                                  : "Unable to prepare this file for AI.",
+                              );
                             }
                           }}
                         >
-                          <Text style={[styles.secondaryButtonText, { color: theme.tint }]}>Summarize</Text>
+                          <Ionicons name="sparkles-outline" size={16} color={theme.tint} />
+                          <Text style={[styles.secondaryButtonText, { color: theme.tint }]}>Ask P-AI</Text>
                         </Pressable>
-
-                        {slide.source !== "local" ? (
-                          <Pressable
-                            style={({ pressed }) => [
-                              styles.secondaryButton,
-                              {
-                                borderColor: theme.tint,
-                                backgroundColor: pressed ? theme.surface : "transparent",
-                              },
-                            ]}
-                            onPress={async () => {
-                              try {
-                                await downloadSlideForOffline(slide);
-                                await queryClient.invalidateQueries({ queryKey: ["slides"] });
-                                Alert.alert("Offline ready", `${slide.name} is available offline.`);
-                              } catch (error) {
-                                Alert.alert("Download failed", error instanceof Error ? error.message : "Unable to download slide.");
-                              }
-                            }}
-                          >
-                            <Text style={[styles.secondaryButtonText, { color: theme.tint }]}>Save Offline</Text>
-                          </Pressable>
-                        ) : null}
                       </View>
                     </View>
                   ))}
@@ -634,8 +825,6 @@ export default function SlidesScreen() {
             </View>
           );
         })}
-
-        {selectedSummary ? <SmartSummaryCard summary={selectedSummary} /> : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -711,6 +900,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: "rgba(255, 255, 255, 0.10)",
   },
+  heroPillText: {
+    flex: 1,
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+  },
   heroIconButton: {
     width: 38,
     height: 38,
@@ -752,11 +946,6 @@ const styles = StyleSheet.create({
   menuItemText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
-  },
-  heroPillText: {
-    flex: 1,
-    fontSize: FontSize.xs,
-    fontWeight: FontWeight.semibold,
   },
   loader: {
     marginTop: Spacing.xxxl,
@@ -863,34 +1052,59 @@ const styles = StyleSheet.create({
   },
   slideCard: {
     borderWidth: 1,
-    borderRadius: Radius.md,
+    borderRadius: Radius.lg,
     padding: Spacing.md,
   },
-  slideHeader: {
+  slideHeaderRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "flex-start",
     gap: Spacing.sm,
   },
+  slideFileTypeIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   slideTextWrap: {
     flex: 1,
+    gap: Spacing.xs,
   },
   slideTitle: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.semibold,
+    lineHeight: 20,
   },
-  slideStatus: {
-    marginTop: Spacing.xs,
-    fontSize: FontSize.xs,
-  },
-  iconActionRow: {
+  slideMetaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: Spacing.xs,
+    flexWrap: "wrap",
+    gap: Spacing.sm,
   },
-  iconButton: {
-    width: 34,
-    height: 34,
+  slideBadge: {
+    borderWidth: 1,
+    borderRadius: Radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  slideBadgeText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.medium,
+  },
+  slideBadgeCodeText: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.bold,
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+  },
+  slideMenuButton: {
+    width: 32,
+    height: 32,
     borderWidth: 1,
     borderRadius: Radius.pill,
     alignItems: "center",
@@ -900,23 +1114,168 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
     flexDirection: "row",
     gap: Spacing.sm,
-    flexWrap: "wrap",
   },
   primaryButton: {
+    flex: 1,
     borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
   },
   primaryButtonText: {
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
   },
   secondaryButton: {
+    flex: 1,
     borderWidth: 1,
     borderRadius: Radius.pill,
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.xs,
   },
   secondaryButtonText: {
+    fontSize: FontSize.sm,
     fontWeight: FontWeight.semibold,
+  },
+  actionSheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(3, 10, 18, 0.45)",
+    justifyContent: "flex-end",
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
+  },
+  actionSheetSheet: {
+    width: "100%",
+    maxWidth: 520,
+    alignSelf: "center",
+    gap: Spacing.sm,
+  },
+  actionSheetHandle: {
+    width: 52,
+    height: 5,
+    borderRadius: Radius.pill,
+    alignSelf: "center",
+    opacity: 0.9,
+  },
+  actionSheetCard: {
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    overflow: "hidden",
+  },
+  actionSheetHeader: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+    borderBottomWidth: 1,
+  },
+  actionSheetTitle: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  actionSheetClose: {
+    width: 34,
+    height: 34,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionSheetItem: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+  },
+  actionSheetIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  actionSheetText: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.medium,
+  },
+  actionSheetDivider: {
+    height: 1,
+    opacity: 0.9,
+    marginLeft: Spacing.lg + 36 + Spacing.sm,
+  },
+  popoverContainer: {
+    position: "absolute",
+    zIndex: 1000,
+  },
+  popoverCard: {
+    width: 340,
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    overflow: "hidden",
+  },
+  popoverHeader: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottomWidth: 1,
+  },
+  popoverTitle: {
+    flex: 1,
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  popoverCloseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  popoverGrid: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: Spacing.sm,
+    justifyContent: "space-between",
+  },
+  popoverGridItem: {
+    width: "48%",
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+  },
+  popoverIconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  popoverGridLabel: {
+    fontSize: FontSize.xs,
+    fontWeight: FontWeight.semibold,
+    textAlign: "center",
   },
 });

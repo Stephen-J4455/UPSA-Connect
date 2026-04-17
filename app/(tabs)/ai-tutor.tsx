@@ -216,6 +216,7 @@ export default function AITutorScreen() {
     slideName?: string;
     slideSource?: "local" | "remote";
     slideUri?: string;
+    handoffPrompt?: string;
   }>();
   const mode = useColorScheme() === "dark" ? "dark" : "light";
   const theme = Colors[mode];
@@ -416,6 +417,9 @@ export default function AITutorScreen() {
     const slideName = Array.isArray(params.slideName) ? params.slideName[0] : params.slideName;
     const slideSource = Array.isArray(params.slideSource) ? params.slideSource[0] : params.slideSource;
     const slideUri = Array.isArray(params.slideUri) ? params.slideUri[0] : params.slideUri;
+    const handoffPrompt = Array.isArray(params.handoffPrompt)
+      ? params.handoffPrompt[0]
+      : params.handoffPrompt;
 
     if (!handoffId || !slidePath || !slideName || !slideSource) return;
     if (lastSlideHandoffRef.current === handoffId) return;
@@ -464,6 +468,10 @@ export default function AITutorScreen() {
           return previous;
         }
 
+        if (handoffPrompt?.trim()) {
+          return handoffPrompt.trim();
+        }
+
         return `Help me study this file: ${slideName}. Summarize it and create revision questions.`;
       });
       setAttachmentLoading(false);
@@ -474,7 +482,14 @@ export default function AITutorScreen() {
     return () => {
       cancelled = true;
     };
-  }, [params.handoffId, params.slideName, params.slidePath, params.slideSource, params.slideUri]);
+  }, [
+    params.handoffId,
+    params.handoffPrompt,
+    params.slideName,
+    params.slidePath,
+    params.slideSource,
+    params.slideUri,
+  ]);
 
   useEffect(() => {
     if (!busy) {

@@ -1,4 +1,4 @@
-import { Ionicons } from "@expo/vector-icons";
+import { Ionicons, Octicons } from "@expo/vector-icons";
 import { Redirect, Tabs } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { StyleSheet, useColorScheme, View } from "react-native";
@@ -105,7 +105,7 @@ export default function TabLayout() {
           title: "Home",
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="grid" color={color} size={size} />
+            <Ionicons name="home" color={color} size={size} />
           ),
         }}
       />

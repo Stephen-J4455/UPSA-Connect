@@ -1,3 +1,4 @@
+import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -168,18 +169,21 @@ export default function LoginScreen() {
               }}
             >
               {loading ? (
-                <ActivityIndicator color={theme.ctaText} />
+                <ActivityIndicator color={theme.accentText} />
               ) : (
                 <View style={styles.buttonContent}>
-                  <View style={[styles.buttonBadge, { backgroundColor: theme.accent }]}> 
-                    <Text style={[styles.buttonBadgeText, { color: theme.accentText }]}>@</Text>
-                  </View>
                   <View style={styles.buttonTextWrap}>
-                    <Text style={[styles.buttonText, { color: theme.ctaText }]}>Continue with UPSA mail</Text>
-                    <Text style={[styles.buttonSubText, { color: theme.ctaText }]}>Secure UPSA account sign-in</Text>
-                  </View>
-                  <View style={[styles.buttonArrowWrap, { backgroundColor: theme.ctaPressed }]}> 
-                    <Text style={[styles.buttonArrow, { color: theme.ctaText }]}>→</Text>
+                    <View
+                      style={[
+                        styles.buttonTitleChip,
+                        {
+                          backgroundColor: theme.accent,
+                        },
+                      ]}
+                    >
+                      <Text style={[styles.buttonText, { color: theme.accentText }]}>Sign in with UPSA mail</Text>
+                    </View>
+              
                   </View>
                 </View>
               )}
@@ -287,10 +291,10 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg + 2,
     borderWidth: 1,
     width: "100%",
-    maxWidth: 340,
-    minHeight: 56,
+    maxWidth: 360,
+    minHeight: 60,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md + 2,
+    paddingVertical: Spacing.md,
     shadowOpacity: 0.24,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 7 },
@@ -300,48 +304,32 @@ const styles = StyleSheet.create({
   buttonContent: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    justifyContent: "center",
     width: "100%",
     gap: Spacing.sm,
   },
-  buttonBadge: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
-  },
-  buttonBadgeText: {
-    fontSize: FontSize.md,
-    fontWeight: FontWeight.bold,
-  },
   buttonTextWrap: {
     flex: 1,
+    alignItems: "center",
+  },
+  buttonTitleChip: {
+    borderRadius: Radius.pill,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10,
   },
   buttonText: {
     fontSize: FontSize.md,
     fontWeight: FontWeight.bold,
-    textAlign: "left",
+    textAlign: "center",
+    lineHeight: 20,
   },
   buttonSubText: {
     marginTop: 2,
     fontSize: FontSize.xs,
     fontWeight: FontWeight.medium,
     opacity: 0.92,
-  },
-  buttonArrow: {
-    fontSize: FontSize.lg,
-    fontWeight: FontWeight.bold,
-    lineHeight: 22,
-  },
-  buttonArrowWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 99,
-    alignItems: "center",
-    justifyContent: "center",
-    flexShrink: 0,
+    lineHeight: 16,
+    textAlign: "center",
   },
 
   note: {
