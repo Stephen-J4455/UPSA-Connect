@@ -1,7 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as FileSystem from "expo-file-system/legacy";
+import * as Sharing from "expo-sharing";
 import * as WebBrowser from "expo-web-browser";
-import { Linking } from "react-native";
+import { Linking, Platform } from "react-native";
 
 import { supabase } from "@/lib/supabase";
 import type { SlideFile } from "@/types/models";
@@ -11,6 +12,7 @@ const LOCAL_SLIDES_KEY = "upsa.localSlides";
 const SLIDE_FOLDERS_KEY = "upsa.slideFolders";
 const SLIDES_DIR = `${FileSystem.documentDirectory}slides/`;
 const SUPPORTED_SLIDE_EXTENSIONS = [".pdf", ".doc", ".docx", ".ppt", ".pptx"];
+const FILE_EXTRACT_API_BASE_URL = "https://upsa-file-extract-server.vercel.app";
 
 type OfflineSlideMap = Record<string, string>;
 
@@ -35,6 +37,67 @@ function isSupportedSlideName(name: string) {
 
 function sanitizeFilename(name: string) {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function inferMimeType(filename: string) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".doc")) return "application/msword";
+  if (lower.endsWith(".docx")) {
+    return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  }
+  if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  if (lower.endsWith(".pptx")) {
+    return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+  }
+  return "application/octet-stream";
+}
+
+async function extractViaFileApi(slide: SlideFile, apiBaseUrl: string) {
+  const uri = await resolveSlideLocalUri(slide);
+  const normalizedUri =
+    Platform.OS === "android" && !uri.startsWith("file://") && !uri.startsWith("content://")
+      ? `file://${uri}`
+      : uri;
+
+  const formData = new FormData();
+  formData.append("file", {
+    uri: normalizedUri,
+    name: slide.name,
+    type: inferMimeType(slide.name),
+  } as any);
+
+  const response = await fetch(`${apiBaseUrl}/extract-text`, {
+    method: "POST",
+    body: formData,
+  });
+
+  const raw = await response.text();
+  let payload: unknown = null;
+
+  try {
+    payload = raw ? JSON.parse(raw) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const apiError =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error?: string }).error || "")
+        : "";
+    throw new Error(apiError || raw || `File extraction request failed with status ${response.status}.`);
+  }
+
+  if (payload && typeof payload === "object" && "text" in payload) {
+    return String((payload as { text: string }).text);
+  }
+
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  return raw || "";
 }
 
 async function ensureSlidesDirectory() {
@@ -264,11 +327,32 @@ async function openLocalFileNatively(localUri: string) {
   }
 }
 
+async function openViaExpoSharing(localUri: string, filename: string) {
+  const info = await FileSystem.getInfoAsync(localUri);
+  if (!info.exists) {
+    throw new Error("Local file not found for sharing.");
+  }
+
+  const sharingAvailable = await Sharing.isAvailableAsync();
+  if (!sharingAvailable) {
+    throw new Error("Native share sheet is not available on this device.");
+  }
+
+  await Sharing.shareAsync(localUri, {
+    mimeType: inferMimeType(filename),
+    dialogTitle: "Open slide with",
+  });
+}
+
+export async function getSlideLocalUri(slide: SlideFile) {
+  return resolveSlideLocalUri(slide);
+}
+
 export async function openSlideInApp(slide: SlideFile) {
   const localUri = await resolveSlideLocalUri(slide);
 
   try {
-    await openLocalFileNatively(localUri);
+    await openSlideInDeviceViewer(slide);
     return;
   } catch {
     // Continue to browser fallbacks.
@@ -286,6 +370,25 @@ export async function openSlideInApp(slide: SlideFile) {
     }
 
     throw new Error("Unable to open this file in-app.");
+  }
+}
+
+export async function openSlideInDeviceViewer(slide: SlideFile) {
+  const localUri = await resolveSlideLocalUri(slide);
+
+  try {
+    await openLocalFileNatively(localUri);
+    return;
+  } catch {
+    // Fallback to share sheet for better device compatibility.
+  }
+
+  try {
+    await openViaExpoSharing(localUri, slide.name);
+    return;
+  } catch (shareError) {
+    const reason = shareError instanceof Error ? ` ${shareError.message}` : "";
+    throw new Error(`Unable to open this file in the device viewer.${reason}`);
   }
 }
 
@@ -353,20 +456,11 @@ export async function deleteSlide(slide: SlideFile) {
 }
 
 export async function getSlideExtractText(slidePath: string) {
-  const { data, error } = await supabase.functions.invoke(
-    "extract-slide-text",
-    {
-      body: { path: slidePath },
-    },
-  );
-
-  if (error) {
-    throw new Error(error.message);
+  const slides = await fetchSlides();
+  const matched = slides.find((slide) => slide.path === slidePath);
+  if (!matched) {
+    throw new Error("Slide not found.");
   }
 
-  if (typeof data === "object" && data && "text" in data) {
-    return String((data as { text: string }).text);
-  }
-
-  return typeof data === "string" ? data : "";
+  return extractViaFileApi(matched, FILE_EXTRACT_API_BASE_URL);
 }

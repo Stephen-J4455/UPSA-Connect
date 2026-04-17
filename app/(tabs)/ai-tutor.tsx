@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-native-markdown-display";
 import {
@@ -28,6 +29,7 @@ import {
   type StoredConversation,
 } from "@/lib/ai-chat";
 import { streamChatReplyWithHuggingFace } from "@/lib/huggingface";
+import { getSlideExtractText } from "@/lib/slides";
 import { useAuth } from "@/providers/auth-provider";
 
 type CodeToken = {
@@ -133,6 +135,16 @@ type ChatMessage = {
   };
 };
 
+type SlideAttachmentContext = {
+  id: string;
+  path: string;
+  name: string;
+  source: "local" | "remote";
+  uri?: string;
+  extractedText?: string;
+  extractionError?: string;
+};
+
 const QUICK_PROMPTS = [
   "Explain Porters Five Forces with UPSA examples",
   "Summarize Financial Accounting lecture notes",
@@ -198,6 +210,13 @@ function groupConversationsByDate(conversations: StoredConversation[]) {
 }
 
 export default function AITutorScreen() {
+  const params = useLocalSearchParams<{
+    handoffId?: string;
+    slidePath?: string;
+    slideName?: string;
+    slideSource?: "local" | "remote";
+    slideUri?: string;
+  }>();
   const mode = useColorScheme() === "dark" ? "dark" : "light";
   const theme = Colors[mode];
   const insets = useSafeAreaInsets();
@@ -320,7 +339,10 @@ export default function AITutorScreen() {
   const [historyItems, setHistoryItems] = useState<StoredConversation[]>([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historySearchQuery, setHistorySearchQuery] = useState("");
+  const [slideAttachment, setSlideAttachment] = useState<SlideAttachmentContext | null>(null);
+  const [attachmentLoading, setAttachmentLoading] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+  const lastSlideHandoffRef = useRef<string | null>(null);
 
   const mapStoredMessagesToChat = (
     rows: { id: string; role: "user" | "assistant"; content: string; thinking?: any }[],
@@ -381,9 +403,78 @@ export default function AITutorScreen() {
     setHistoryOpen(false);
     setHistoryError(null);
     setHistoryItems([]);
+    setHistoryLoaded(false);
     setHistoryLoading(false);
     setHistoryLoadingConversationId(null);
+    setSlideAttachment(null);
+    setAttachmentLoading(false);
   }, [user?.id]);
+
+  useEffect(() => {
+    const handoffId = Array.isArray(params.handoffId) ? params.handoffId[0] : params.handoffId;
+    const slidePath = Array.isArray(params.slidePath) ? params.slidePath[0] : params.slidePath;
+    const slideName = Array.isArray(params.slideName) ? params.slideName[0] : params.slideName;
+    const slideSource = Array.isArray(params.slideSource) ? params.slideSource[0] : params.slideSource;
+    const slideUri = Array.isArray(params.slideUri) ? params.slideUri[0] : params.slideUri;
+
+    if (!handoffId || !slidePath || !slideName || !slideSource) return;
+    if (lastSlideHandoffRef.current === handoffId) return;
+
+    lastSlideHandoffRef.current = handoffId;
+    setAttachmentLoading(true);
+    setSlideAttachment({
+      id: handoffId,
+      path: slidePath,
+      name: slideName,
+      source: slideSource,
+      uri: slideUri,
+    });
+
+    let cancelled = false;
+
+    const hydrateAttachmentFromSlide = async () => {
+      let extractedText = "";
+      let extractionError: string | undefined;
+
+      try {
+        extractedText = await getSlideExtractText(slidePath);
+      } catch (error) {
+        console.warn("Unable to preload extracted slide text", error);
+        extractionError =
+          error instanceof Error
+            ? error.message
+            : "Unable to extract text from this file.";
+      }
+
+      if (cancelled) return;
+
+      const snippet = extractedText.trim().slice(0, 4500);
+      setSlideAttachment({
+        id: handoffId,
+        path: slidePath,
+        name: slideName,
+        source: slideSource,
+        uri: slideUri,
+        extractedText: snippet || undefined,
+        extractionError: snippet ? undefined : extractionError,
+      });
+
+      setPrompt((previous) => {
+        if (previous.trim().length > 0) {
+          return previous;
+        }
+
+        return `Help me study this file: ${slideName}. Summarize it and create revision questions.`;
+      });
+      setAttachmentLoading(false);
+    };
+
+    void hydrateAttachmentFromSlide();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params.handoffId, params.slideName, params.slidePath, params.slideSource, params.slideUri]);
 
   useEffect(() => {
     if (!busy) {
@@ -681,6 +772,8 @@ export default function AITutorScreen() {
     setTypingMessageId(null);
     setThinkingExpanded({});
     setConversationId(null);
+    setSlideAttachment(null);
+    setAttachmentLoading(false);
   };
 
   const handleOpenHistory = async () => {
@@ -723,6 +816,8 @@ export default function AITutorScreen() {
       setPrompt("");
       setTypingMessageId(null);
       setThinkingExpanded({});
+      setSlideAttachment(null);
+      setAttachmentLoading(false);
       setHistoryOpen(false);
       requestAnimationFrame(() => {
         scrollRef.current?.scrollToEnd({ animated: false });
@@ -755,6 +850,26 @@ export default function AITutorScreen() {
     const value = getPromptValue();
     if (!value) return;
 
+    const attachmentContext = slideAttachment
+      ? [
+          `Attached file: ${slideAttachment.name}`,
+          slideAttachment.path ? `Slide path: ${slideAttachment.path}` : null,
+          slideAttachment.uri ? `Local URI: ${slideAttachment.uri}` : null,
+          slideAttachment.extractedText
+            ? `Extracted file content:\n${slideAttachment.extractedText}`
+            : slideAttachment.extractionError
+              ? `Extraction note: ${slideAttachment.extractionError}`
+              : "Extraction note: file content extraction is unavailable for this file.",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : "";
+
+    const valueForModel = attachmentContext ? `${value}\n\n${attachmentContext}` : value;
+    const displayValue = slideAttachment
+      ? `${value}\n\n[Attached file: ${slideAttachment.name}]`
+      : value;
+
     const sentAt = Date.now();
     const assistantMessageId = `assistant-${Date.now()}`;
     setPrompt("");
@@ -763,7 +878,7 @@ export default function AITutorScreen() {
     const userMessage: ChatMessage = {
       id: `user-${Date.now()}`,
       role: "user",
-      text: value,
+      text: displayValue,
     };
     pushMessage(userMessage);
 
@@ -784,12 +899,25 @@ export default function AITutorScreen() {
       await saveMessageIfAuthenticated({
         conversationIdValue,
         role: "user",
-        content: value,
+        content: valueForModel,
       });
 
-      const baseHistory = [...messages, userMessage].map((message) => ({
+      const baseHistory = [
+        ...messages.map((message) => ({
+          role: message.role,
+          content: message.text,
+        })),
+        {
+          role: "user" as const,
+          content: valueForModel,
+        },
+      ];
+
+      const streamPrompt = valueForModel;
+
+      const normalizedHistory = baseHistory.map((message) => ({
         role: message.role,
-        content: message.text,
+        content: message.content,
       }));
 
       let streamingText = "";
@@ -819,7 +947,7 @@ export default function AITutorScreen() {
         }));
       };
 
-      const firstPass = await streamChatReplyWithHuggingFace(value, baseHistory, {
+      const firstPass = await streamChatReplyWithHuggingFace(streamPrompt, normalizedHistory, {
         onDelta: appendChunk,
         onThinkingDelta: appendThinkingChunk,
         maxTokens: 2000,
@@ -917,7 +1045,9 @@ export default function AITutorScreen() {
               },
             ]}
           >
-            <Ionicons name="bookmarks" size={18} color={theme.tint} />
+           <View style={[styles.historyPanelIcon, { backgroundColor: theme.tint + "20" }]}>
+                  <Ionicons name="menu" size={18} color={theme.tint} />
+                </View>
           </Pressable>
           <Text style={[styles.promptToolbarTitle, { color: theme.textMuted }]}>Professional AI</Text>
         </View>
@@ -965,6 +1095,53 @@ export default function AITutorScreen() {
             </Pressable>
           ))}
         </ScrollView>
+
+        {slideAttachment ? (
+          <View
+            style={[
+              styles.attachmentCard,
+              {
+                borderColor: theme.border,
+                backgroundColor: theme.surface,
+              },
+            ]}
+          >
+            <View style={styles.attachmentCardLeft}>
+              <View style={[styles.attachmentIcon, { borderColor: theme.border, backgroundColor: theme.surfaceMuted }]}> 
+                <Ionicons name="document-text-outline" size={16} color={theme.tint} />
+              </View>
+              <View style={styles.attachmentCopy}>
+                <Text numberOfLines={1} style={[styles.attachmentTitle, { color: theme.text }]}>
+                  {slideAttachment.name}
+                </Text>
+                <Text numberOfLines={1} style={[styles.attachmentMeta, { color: theme.textMuted }]}>
+                  {attachmentLoading
+                    ? "Extracting file content..."
+                    : slideAttachment.extractedText
+                      ? "File attached and extracted for AI"
+                      : "File attached (metadata only)"}
+                </Text>
+              </View>
+            </View>
+            <Pressable
+              onPress={() => {
+                setSlideAttachment(null);
+                setAttachmentLoading(false);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Remove attached file"
+              style={({ pressed }) => [
+                styles.attachmentRemoveButton,
+                {
+                  borderColor: theme.border,
+                  backgroundColor: pressed ? theme.surfaceMuted : theme.surface,
+                },
+              ]}
+            >
+              <Ionicons name="close" size={14} color={theme.textSubtle} />
+            </Pressable>
+          </View>
+        ) : null}
 
         <View style={styles.chatThread}>
           {messages.length === 0 ? (
@@ -1412,6 +1589,50 @@ const styles = StyleSheet.create({
   promptChipText: {
     fontSize: FontSize.sm,
     fontWeight: FontWeight.medium,
+  },
+  attachmentCard: {
+    marginHorizontal: Spacing.sm,
+    marginTop: Spacing.xs,
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    padding: Spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: Spacing.sm,
+  },
+  attachmentCardLeft: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: Spacing.sm,
+  },
+  attachmentIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  attachmentCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  attachmentTitle: {
+    fontSize: FontSize.sm,
+    fontWeight: FontWeight.semibold,
+  },
+  attachmentMeta: {
+    fontSize: FontSize.xs,
+  },
+  attachmentRemoveButton: {
+    width: 28,
+    height: 28,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
   },
 
   chatThread: {

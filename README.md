@@ -42,6 +42,10 @@ pnpm install
 cp .env.example .env
 ```
 
+File extraction from `My Slides` and `AI Tutor` is configured directly in the app to use:
+
+- `https://upsa-file-extract-server.vercel.app`
+
 3. Start the app:
 
 ```bash
@@ -56,8 +60,7 @@ Create these functions in your Supabase project:
   - `task: "summary"` -> returns `summary` JSON structure
   - `task: "quiz"` -> returns `questions` array
   - `task: "vision-transcribe"` -> returns `transcript`
-- `extract-slide-text`
-  - accepts slide `path` and returns extracted `text`
+
 
 ## Storage and Tables Expected
 

@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as DocumentPicker from "expo-document-picker";
+import { router } from "expo-router";
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -36,7 +37,8 @@ import {
   fetchSlideFolders,
   fetchSlides,
   getSlideExtractText,
-  openSlideInApp,
+  getSlideLocalUri,
+  openSlideInDeviceViewer,
 } from "@/lib/slides";
 import type { SlideFile } from "@/types/models";
 
@@ -524,15 +526,28 @@ export default function SlidesScreen() {
                               {
                                 borderColor: theme.tint,
                                 backgroundColor: pressed ? theme.surface : "transparent",
-                                opacity: summaryMutation.isPending ? 0.6 : 1,
                               },
                             ]}
-                            disabled={summaryMutation.isPending}
                             onPress={async () => {
                               try {
-                                await summaryMutation.mutateAsync(slide);
+                                const slideUri = await getSlideLocalUri(slide);
+                                router.push({
+                                  pathname: "/(tabs)/ai-tutor",
+                                  params: {
+                                    handoffId: String(Date.now()),
+                                    slidePath: slide.path,
+                                    slideName: slide.name,
+                                    slideSource: slide.source,
+                                    slideUri,
+                                  },
+                                });
                               } catch (error) {
-                                Alert.alert("Summary error", error instanceof Error ? error.message : "Failed to summarize.");
+                                Alert.alert(
+                                  "AI handoff failed",
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Unable to prepare this file for AI.",
+                                );
                               }
                             }}
                           >
@@ -559,13 +574,34 @@ export default function SlidesScreen() {
                           style={({ pressed }) => [styles.primaryButton, { backgroundColor: pressed ? theme.tintPressed : theme.tint }]}
                           onPress={async () => {
                             try {
-                              await openSlideInApp(slide);
+                              await openSlideInDeviceViewer(slide);
                             } catch (error) {
                               Alert.alert("Open failed", error instanceof Error ? error.message : "Unable to open file.");
                             }
                           }}
                         >
-                          <Text style={[styles.primaryButtonText, { color: theme.accent }]}>Open in App</Text>
+                          <Text style={[styles.primaryButtonText, { color: theme.accent }]}>Open in Viewer</Text>
+                        </Pressable>
+
+                        <Pressable
+                          style={({ pressed }) => [
+                            styles.secondaryButton,
+                            {
+                              borderColor: theme.tint,
+                              backgroundColor: pressed ? theme.surface : "transparent",
+                              opacity: summaryMutation.isPending ? 0.65 : 1,
+                            },
+                          ]}
+                          disabled={summaryMutation.isPending}
+                          onPress={async () => {
+                            try {
+                              await summaryMutation.mutateAsync(slide);
+                            } catch (error) {
+                              Alert.alert("Summary error", error instanceof Error ? error.message : "Failed to summarize.");
+                            }
+                          }}
+                        >
+                          <Text style={[styles.secondaryButtonText, { color: theme.tint }]}>Summarize</Text>
                         </Pressable>
 
                         {slide.source !== "local" ? (
