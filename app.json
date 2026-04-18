@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "UPSA Student Hub",
-    "slug": "upsa-student-hub",
+    "name": "UPS-Connect",
+    "slug": "upsa-connect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -21,7 +21,7 @@
       "permissions": [
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.stephen_j.upsastudenthub"
+      "package": "com.stephen_j.upsaconnect"
     },
     "web": {
       "output": "static",
@@ -33,8 +33,8 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow UPSA Student Hub to access your photos.",
-          "cameraPermission": "Allow UPSA Student Hub to use your camera for Snapshot Note Taking."
+          "photosPermission": "Allow UPS-Connect to access your photos.",
+          "cameraPermission": "Allow UPS-Connect to use your camera for Snapshot Note Taking."
         }
       ],
       [
